@@ -22,6 +22,18 @@ class CheckCommand:
     shell: bool = True
 
 
+@dataclass
+class CommitInfo:
+    hash: str
+    label: str
+
+
+@dataclass
+class DiffResult:
+    diff: str
+    files: list[str]
+
+
 app = FastAPI()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 app.mount(
@@ -76,9 +88,27 @@ class Project:
         )
         return result.stdout.strip()
 
-    async def get_diff(self, branch: str) -> str:
+    async def get_commit_diff(self, commit: str) -> DiffResult:
+        diff_proc = await asyncio.create_subprocess_exec(
+            "git", "diff", f"{commit}^", commit, "--unified=10",
+            cwd=self.git_root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        files_proc = await asyncio.create_subprocess_exec(
+            "git", "diff", f"{commit}^", commit, "--name-only",
+            cwd=self.git_root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        diff_stdout, _ = await diff_proc.communicate()
+        files_stdout, _ = await files_proc.communicate()
+        files = [f for f in files_stdout.decode().strip().split("\n") if f]
+        return DiffResult(diff=diff_stdout.decode(), files=files)
+
+    async def get_branch_diff(self, branch: str, base: str) -> DiffResult:
         proc = await asyncio.create_subprocess_exec(
-            "git", "merge-base", self.base_branch, branch,
+            "git", "merge-base", base, branch,
             cwd=self.git_root,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -90,14 +120,38 @@ class Project:
         if branch != self.get_current_branch():
             cmd.insert(3, branch)
 
-        proc = await asyncio.create_subprocess_exec(
+        diff_proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=self.git_root,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
-        return stdout.decode()
+        diff_stdout, _ = await diff_proc.communicate()
+
+        is_current = branch == self.get_current_branch()
+        files_proc = await asyncio.create_subprocess_exec(
+            "git", "diff", f"{base}...{branch}", "--name-only",
+            cwd=self.git_root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        files_stdout, _ = await files_proc.communicate()
+        files = set()
+        for f in files_stdout.decode().strip().split("\n"):
+            if f:
+                files.add(f)
+        if is_current:
+            head_proc = await asyncio.create_subprocess_exec(
+                "git", "diff", "HEAD", "--name-only",
+                cwd=self.git_root,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            head_stdout, _ = await head_proc.communicate()
+            for f in head_stdout.decode().strip().split("\n"):
+                if f:
+                    files.add(f)
+        return DiffResult(diff=diff_stdout.decode(), files=sorted(files))
 
     async def get_branches(self) -> list[str]:
         proc = await asyncio.create_subprocess_exec(
@@ -110,32 +164,26 @@ class Project:
         current = self.get_current_branch()
         return [b for b in stdout.decode().strip().split("\n") if b and b != current]
 
-    async def get_changed_files(self, branch: str) -> list[str]:
-        base = self.base_branch
-        is_current = branch == self.get_current_branch()
+    async def get_commits(
+        self,
+        branch: str,
+        base: str,
+    ) -> list[CommitInfo]:
         proc = await asyncio.create_subprocess_exec(
-            "git", "diff", f"{base}...{branch}", "--name-only",
+            "git", "log", f"{base}..{branch}", "--pretty=format:%H%x00%s",
             cwd=self.git_root,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await proc.communicate()
-        files = set()
-        for f in stdout.decode().strip().split("\n"):
-            if f:
-                files.add(f)
-        if is_current:
-            proc = await asyncio.create_subprocess_exec(
-                "git", "diff", "HEAD", "--name-only",
-                cwd=self.git_root,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await proc.communicate()
-            for f in stdout.decode().strip().split("\n"):
-                if f:
-                    files.add(f)
-        return sorted(files)
+        commits: list[CommitInfo] = []
+        for line in stdout.decode().split("\n"):
+            if not line:
+                continue
+            full_hash, subject = line.split("\x00", 1)
+            short_hash = full_hash[:7]
+            commits.append(CommitInfo(hash=full_hash, label=f"{short_hash} {subject}"))
+        return commits
 
     def run_checks(self) -> "CheckResult":
         if not self.check_command:
@@ -191,17 +239,30 @@ def index(request: Request):
 
 
 @app.get("/api/diff")
-async def diff(branch: str | None = None):
-    effective_branch = branch or PROJECT.get_current_branch()
-    raw_diff = await PROJECT.get_diff(branch=effective_branch)
-    files = await PROJECT.get_changed_files(branch=effective_branch)
-    return {"diff": raw_diff, "files": files}
+async def diff(
+    branch: str | None = None,
+    base: str | None = None,
+    commit: str | None = None,
+):
+    if commit:
+        result = await PROJECT.get_commit_diff(commit)
+    else:
+        effective_branch = branch or PROJECT.get_current_branch()
+        effective_base = base or PROJECT.base_branch
+        result = await PROJECT.get_branch_diff(effective_branch, effective_base)
+    return {"diff": result.diff, "files": result.files}
 
 
 @app.get("/api/branches")
 async def branches():
     branches_list = await PROJECT.get_branches()
     return {"branches": branches_list, "current": PROJECT.get_current_branch()}
+
+@app.get("/api/commits")
+async def commits(branch: str, base: str | None = None):
+    effective_base = base or PROJECT.base_branch
+    commits = await PROJECT.get_commits(branch=branch, base=effective_base)
+    return {"commits": [asdict(c) for c in commits]}
 
 
 @app.get("/api/checks")

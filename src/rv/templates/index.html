@@ -55,10 +55,28 @@
             <label class="text-xs font-medium text-gray-500">Branch</label>
             <select
               data-review-target="branchSelect"
-              data-action="change->review#fetchDiff"
+              data-action="change->review#branchChanged"
               class="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
             >
               <option value="">Current (working tree)</option>
+            </select>
+          </div>
+          <div class="flex flex-col gap-2">
+            <label class="text-xs font-medium text-gray-500">Base branch</label>
+            <select
+              data-review-target="baseBranchSelect"
+              data-action="change->review#baseBranchChanged"
+              class="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+            ></select>
+          </div>
+          <div class="flex flex-col gap-2">
+            <label class="text-xs font-medium text-gray-500">Commit</label>
+            <select
+              data-review-target="commitSelect"
+              data-action="change->review#commitChanged"
+              class="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+            >
+              <option value="">All commits (branch diff)</option>
             </select>
           </div>
           <button

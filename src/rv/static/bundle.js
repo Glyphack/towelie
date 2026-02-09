@@ -25166,9 +25166,18 @@
       this.comments = [];
       this.activeForm = null;
       this.selection = null;
+      this.mode = "worktree" /* Worktree */;
     }
     static {
-      this.targets = ["output", "fileExplorer", "branchSelect", "sidebar", "sidebarToggle"];
+      this.targets = [
+        "output",
+        "fileExplorer",
+        "branchSelect",
+        "baseBranchSelect",
+        "commitSelect",
+        "sidebar",
+        "sidebarToggle"
+      ];
     }
     static {
       this.values = {
@@ -25206,7 +25215,7 @@
     async connect() {
       this.loadComments();
       await this.loadBranches();
-      await this.fetchDiff();
+      await this.reloadReview();
       this.outputTarget.addEventListener("mousedown", (e) => {
         if (!(e.target instanceof HTMLElement)) {
           return;
@@ -25227,19 +25236,100 @@
         this.handleSelectionEnded(e.target, this.selection);
       });
     }
+    deriveMode() {
+      const branch = this.branchSelectTarget.value;
+      const commit = this.commitSelectTarget.value;
+      if (commit) return "commit" /* Commit */;
+      if (!branch) return "worktree" /* Worktree */;
+      return "branch" /* Branch */;
+    }
+    applyModeConstraints() {
+      switch (this.mode) {
+        case "worktree" /* Worktree */:
+          this.commitSelectTarget.disabled = true;
+          this.baseBranchSelectTarget.disabled = false;
+          break;
+        case "branch" /* Branch */:
+          this.commitSelectTarget.disabled = false;
+          this.baseBranchSelectTarget.disabled = false;
+          break;
+        case "commit" /* Commit */:
+          this.commitSelectTarget.disabled = false;
+          this.baseBranchSelectTarget.disabled = true;
+          break;
+      }
+    }
+    async reloadReview() {
+      this.mode = this.deriveMode();
+      this.applyModeConstraints();
+      if (this.mode !== "commit" /* Commit */) {
+        const branch = this.branchSelectTarget.value;
+        const baseBranch = this.baseBranchSelectTarget.value;
+        await this.loadCommits(branch, baseBranch);
+      }
+      await this.fetchDiff();
+    }
     async loadBranches() {
       const res = await fetch("/api/branches");
       const data = await res.json();
+      const currentBranch = data.current;
       for (const branch of data.branches) {
         const option = document.createElement("option");
         option.value = branch;
         option.textContent = branch;
         this.branchSelectTarget.appendChild(option);
       }
+      const baseBranches = data.branches.filter((branch) => branch !== currentBranch).sort((a, b) => a.localeCompare(b));
+      if (!this.baseBranchSelectTarget.options.length) {
+        const defaultOption = document.createElement("option");
+        defaultOption.value = "";
+        defaultOption.textContent = "Default (main/master)";
+        this.baseBranchSelectTarget.appendChild(defaultOption);
+      }
+      for (const branch of baseBranches) {
+        const option = document.createElement("option");
+        option.value = branch;
+        option.textContent = branch;
+        this.baseBranchSelectTarget.appendChild(option);
+      }
+    }
+    clearCommitOptions() {
+      this.commitSelectTarget.innerHTML = "";
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "All commits (branch diff)";
+      this.commitSelectTarget.appendChild(option);
+    }
+    async loadCommits(branch, baseBranch) {
+      this.clearCommitOptions();
+      if (!branch) return;
+      const params = new URLSearchParams({ branch });
+      if (baseBranch) {
+        params.set("base", baseBranch);
+      }
+      const res = await fetch(`/api/commits?${params.toString()}`);
+      const data = await res.json();
+      for (const commit of data.commits) {
+        const option = document.createElement("option");
+        option.value = commit.hash;
+        option.textContent = commit.label;
+        this.commitSelectTarget.appendChild(option);
+      }
     }
     async fetchDiff() {
       const branch = this.branchSelectTarget.value;
-      const url = branch ? `/api/diff?branch=${encodeURIComponent(branch)}` : "/api/diff";
+      const commit = this.commitSelectTarget.value;
+      const baseBranch = this.baseBranchSelectTarget.value;
+      const params = new URLSearchParams();
+      if (commit) {
+        params.set("commit", commit);
+      } else if (branch) {
+        params.set("branch", branch);
+      }
+      if (this.mode !== "commit" /* Commit */ && baseBranch) {
+        params.set("base", baseBranch);
+      }
+      const url = params.toString() ? `/api/diff?${params.toString()}` : "/api/diff";
       const res = await fetch(url);
       const data = await res.json();
       this.outputTarget.innerHTML = "";
@@ -25252,6 +25342,15 @@
       this.diffValue = data;
       this.loadComments();
       this.renderCommentsList();
+    }
+    async branchChanged() {
+      await this.reloadReview();
+    }
+    async baseBranchChanged() {
+      await this.reloadReview();
+    }
+    async commitChanged() {
+      await this.reloadReview();
     }
     getDiffSide(element) {
       const filesDiv = element.closest(".d2h-files-diff");

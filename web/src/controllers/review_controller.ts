@@ -6,6 +6,12 @@ enum DiffSide {
   New = "new",
 }
 
+enum ReviewMode {
+  Worktree = "worktree",
+  Branch = "branch",
+  Commit = "commit",
+}
+
 interface Selection {
   fileName: string;
   startLine: number;
@@ -25,7 +31,15 @@ interface DiffResponse {
 }
 
 export default class ReviewController extends Controller {
-  static targets = ["output", "fileExplorer", "branchSelect", "sidebar", "sidebarToggle"];
+  static targets = [
+    "output",
+    "fileExplorer",
+    "branchSelect",
+    "baseBranchSelect",
+    "commitSelect",
+    "sidebar",
+    "sidebarToggle",
+  ];
   static values = {
     diff: { type: Object, default: {} },
     sidebarVisible: { type: Boolean, default: true },
@@ -34,6 +48,8 @@ export default class ReviewController extends Controller {
   declare readonly outputTarget: HTMLElement;
   declare readonly fileExplorerTarget: HTMLElement;
   declare readonly branchSelectTarget: HTMLSelectElement;
+  declare readonly baseBranchSelectTarget: HTMLSelectElement;
+  declare readonly commitSelectTarget: HTMLSelectElement;
   declare readonly sidebarTarget: HTMLElement;
   declare readonly sidebarToggleTarget: HTMLElement;
   declare diffValue: DiffResponse;
@@ -44,6 +60,7 @@ export default class ReviewController extends Controller {
   comments: Comment[] = [];
   private activeForm: HTMLElement | null = null;
   private selection: Partial<Selection> | null = null;
+  private mode: ReviewMode = ReviewMode.Worktree;
 
   diffValueChanged() {
     this.outputTarget.innerHTML = "";
@@ -75,7 +92,7 @@ export default class ReviewController extends Controller {
   async connect() {
     this.loadComments();
     await this.loadBranches();
-    await this.fetchDiff();
+    await this.reloadReview();
 
     this.outputTarget.addEventListener("mousedown", (e) => {
       if (!(e.target instanceof HTMLElement)) {
@@ -103,23 +120,111 @@ export default class ReviewController extends Controller {
     });
   }
 
+  private deriveMode(): ReviewMode {
+    const branch = this.branchSelectTarget.value;
+    const commit = this.commitSelectTarget.value;
+    if (commit) return ReviewMode.Commit;
+    if (!branch) return ReviewMode.Worktree;
+    return ReviewMode.Branch;
+  }
+
+  private applyModeConstraints() {
+    switch (this.mode) {
+      case ReviewMode.Worktree:
+        this.commitSelectTarget.disabled = true;
+        this.baseBranchSelectTarget.disabled = false;
+        break;
+      case ReviewMode.Branch:
+        this.commitSelectTarget.disabled = false;
+        this.baseBranchSelectTarget.disabled = false;
+        break;
+      case ReviewMode.Commit:
+        this.commitSelectTarget.disabled = false;
+        this.baseBranchSelectTarget.disabled = true;
+        break;
+    }
+  }
+
+  private async reloadReview() {
+    this.mode = this.deriveMode();
+    this.applyModeConstraints();
+
+    if (this.mode !== ReviewMode.Commit) {
+      const branch = this.branchSelectTarget.value;
+      const baseBranch = this.baseBranchSelectTarget.value;
+      await this.loadCommits(branch, baseBranch);
+    }
+
+    await this.fetchDiff();
+  }
+
   private async loadBranches() {
     const res = await fetch("/api/branches");
     const data = await res.json();
 
+    const currentBranch = data.current;
     for (const branch of data.branches) {
       const option = document.createElement("option");
       option.value = branch;
       option.textContent = branch;
       this.branchSelectTarget.appendChild(option);
     }
+    const baseBranches = data.branches
+      .filter((branch: string) => branch !== currentBranch)
+      .sort((a: string, b: string) => a.localeCompare(b));
+    if (!this.baseBranchSelectTarget.options.length) {
+      const defaultOption = document.createElement("option");
+      defaultOption.value = "";
+      defaultOption.textContent = "Default (main/master)";
+      this.baseBranchSelectTarget.appendChild(defaultOption);
+    }
+    for (const branch of baseBranches) {
+      const option = document.createElement("option");
+      option.value = branch;
+      option.textContent = branch;
+      this.baseBranchSelectTarget.appendChild(option);
+    }
   }
 
-  async fetchDiff() {
+  private clearCommitOptions() {
+    this.commitSelectTarget.innerHTML = "";
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "All commits (branch diff)";
+    this.commitSelectTarget.appendChild(option);
+  }
+
+  private async loadCommits(branch: string, baseBranch: string) {
+    this.clearCommitOptions();
+    if (!branch) return;
+    const params = new URLSearchParams({ branch });
+    if (baseBranch) {
+      params.set("base", baseBranch);
+    }
+    const res = await fetch(`/api/commits?${params.toString()}`);
+    const data = await res.json();
+    for (const commit of data.commits) {
+      const option = document.createElement("option");
+      option.value = commit.hash;
+      option.textContent = commit.label;
+      this.commitSelectTarget.appendChild(option);
+    }
+  }
+
+  private async fetchDiff() {
     const branch = this.branchSelectTarget.value;
-    const url = branch
-      ? `/api/diff?branch=${encodeURIComponent(branch)}`
-      : "/api/diff";
+    const commit = this.commitSelectTarget.value;
+    const baseBranch = this.baseBranchSelectTarget.value;
+    const params = new URLSearchParams();
+    if (commit) {
+      params.set("commit", commit);
+    } else if (branch) {
+      params.set("branch", branch);
+    }
+    if (this.mode !== ReviewMode.Commit && baseBranch) {
+      params.set("base", baseBranch);
+    }
+    const url = params.toString() ? `/api/diff?${params.toString()}` : "/api/diff";
     const res = await fetch(url);
     const data: DiffResponse = await res.json();
 
@@ -133,6 +238,18 @@ export default class ReviewController extends Controller {
     this.diffValue = data;
     this.loadComments();
     this.renderCommentsList();
+  }
+
+  async branchChanged() {
+    await this.reloadReview();
+  }
+
+  async baseBranchChanged() {
+    await this.reloadReview();
+  }
+
+  async commitChanged() {
+    await this.reloadReview();
   }
 
   private getDiffSide(element: HTMLElement): DiffSide {

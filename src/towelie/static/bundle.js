@@ -25175,6 +25175,53 @@
       btn.disabled = false;
     }, ms);
   }
+  function ensureCommentableLineNumberStyles() {
+    if (document.getElementById("towelie-comment-styles")) return;
+    const style = document.createElement("style");
+    style.id = "towelie-comment-styles";
+    style.textContent = `
+    td.d2h-code-side-linenumber.towelie-commentable {
+      cursor: pointer;
+      position: relative;
+      transition: background-color 150ms ease, color 150ms ease;
+    }
+
+    td.d2h-code-side-linenumber.towelie-commentable:hover {
+      background-color: rgba(16, 185, 129, 0.14);
+      color: #065f46;
+    }
+
+    td.d2h-code-side-linenumber.towelie-commentable:hover::before {
+      content: "+";
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      color: #10b981;
+      pointer-events: none;
+    }
+
+    tr.towelie-comment-range td.d2h-code-side-linenumber {
+      background-color: rgba(251, 191, 36, 0.38);
+    }
+
+    tr.towelie-comment-range td.d2h-code-side-line {
+      background-color: rgba(251, 191, 36, 0.12);
+    }
+
+    tr.towelie-comment-anchor td.d2h-code-side-linenumber {
+      background-color: rgba(248, 113, 113, 0.38);
+      color: #7f1d1d;
+    }
+
+    tr.towelie-comment-anchor td.d2h-code-side-line {
+      background-color: rgba(248, 113, 113, 0.12);
+    }
+  `;
+    document.head.appendChild(style);
+  }
   var CommentStorage = class _CommentStorage {
     constructor() {
       this.comments = [];
@@ -25275,8 +25322,9 @@
     for (const [name, fullPath] of files) {
       const fileEl = document.createElement("div");
       fileEl.style.paddingLeft = `${depth * 12}px`;
+      fileEl.className = "flex items-center gap-1 group";
       const a = document.createElement("a");
-      a.className = "block truncate rounded-md px-2 py-1 text-xs text-gray-600 transition-colors hover:text-gray-900 hover:bg-gray-50";
+      a.className = "block truncate rounded-md px-2 py-1 text-xs text-gray-600 transition-colors hover:text-gray-900 hover:bg-gray-50 flex-1";
       a.textContent = name;
       const hash = hrefMap.get(fullPath);
       if (hash) a.href = hash;
@@ -25388,17 +25436,17 @@
           deleteBtn.addEventListener("click", () => onDelete(comment));
           popup.appendChild(deleteBtn);
           firstRow.appendChild(popup);
-          const close = () => {
+          const closeHandler = () => {
             popup.remove();
-            document.removeEventListener("click", close);
+            document.removeEventListener("click", closeHandler);
           };
-          document.addEventListener("click", close);
+          setTimeout(() => document.addEventListener("click", closeHandler), 0);
         });
         firstRow.appendChild(btn);
       }
     }
   }
-  function showInlineCommentForm(anchor, selection, onSubmit) {
+  function showInlineCommentForm(anchor, selection, onSubmit, onClose) {
     const { fileName, startLine, endLine, diffSide } = selection;
     const form = document.createElement("tr");
     form.innerHTML = `
@@ -25436,10 +25484,12 @@
       if (text) {
         onSubmit(selection, text);
         form.remove();
+        onClose();
       }
     });
     form.querySelector('[data-action="cancel"]').addEventListener("click", () => {
       form.remove();
+      onClose();
     });
     anchor.insertAdjacentElement("afterend", form);
     const scrollParent = form.closest(".d2h-file-side-diff");
@@ -25455,8 +25505,82 @@
       super(...arguments);
       this.storage = new CommentStorage();
       this.activeForm = null;
-      this.selection = null;
+      this.selectionState = {
+        start: null,
+        rows: /* @__PURE__ */ new Set(),
+        row: null,
+        selecting: false,
+        hadStart: false,
+        didDrag: false
+      };
       this.sidebarVisible = true;
+      this.handleLineMouseDown = (e) => {
+        const context = this.getLineContext(e.target);
+        if (!context) return;
+        e.preventDefault();
+        if (this.activeForm) {
+          this.activeForm.remove();
+          this.activeForm = null;
+        }
+        const { location, row } = context;
+        if (!this.selectionState.start || !this.matchesSelectionLocation(this.selectionState.start, location)) {
+          this.selectionState.start = this.selectionFromLocation(location);
+          this.selectionState.hadStart = false;
+        } else {
+          this.selectionState.start.endLine = location.lineNumber;
+          this.selectionState.hadStart = true;
+        }
+        this.selectionState.selecting = true;
+        this.selectionState.didDrag = false;
+        this.selectionState.row = row;
+        this.updateSelectionHighlight();
+      };
+      this.handleLineMouseMove = (e) => {
+        if (!this.selectionState.selecting || !this.selectionState.start) return;
+        const context = this.getLineContext(e.target);
+        if (!context) return;
+        const { location, row } = context;
+        if (!this.matchesSelectionLocation(this.selectionState.start, location)) {
+          return;
+        }
+        if (this.selectionState.start.endLine !== location.lineNumber) {
+          this.selectionState.start.endLine = location.lineNumber;
+          this.selectionState.row = row;
+          this.selectionState.didDrag = this.selectionState.start.startLine !== this.selectionState.start.endLine;
+          this.updateSelectionHighlight();
+        }
+      };
+      this.handleMouseUp = () => {
+        if (!this.selectionState.selecting) return;
+        this.selectionState.selecting = false;
+        if (!this.selectionState.start || !this.selectionState.row) {
+          this.selectionState.start = null;
+          this.clearSelectionHighlight();
+          return;
+        }
+        const shouldCommit = this.selectionState.didDrag || this.selectionState.hadStart;
+        const normalized = this.normalizeSelection(this.selectionState.start);
+        this.selectionState.hadStart = false;
+        this.selectionState.didDrag = false;
+        if (!shouldCommit) {
+          this.updateSelectionHighlight();
+          return;
+        }
+        this.selectionState.start = null;
+        this.activeForm = showInlineCommentForm(
+          this.selectionState.row,
+          normalized,
+          (selection, text) => {
+            const branch = this.branchSelectTarget.value || "current";
+            this.storage.add(selection, text, branch);
+            this.activeForm = null;
+            this.decorateLineNumbersAndRenderComments();
+          },
+          () => {
+            this.clearSelectionHighlight();
+          }
+        );
+      };
     }
     static {
       this.targets = [
@@ -25471,47 +25595,22 @@
     }
     async connect() {
       this.storage.load();
+      ensureCommentableLineNumberStyles();
       await this.reloadReview();
-      this.outputTarget.addEventListener("mousedown", (e) => {
-        if (!(e.target instanceof HTMLElement)) return;
-        if (!e.target.classList.contains("d2h-code-side-linenumber")) return;
-        const lineNumber = Number(e.target.textContent);
-        if (isNaN(lineNumber)) return;
-        const fileDiffContainer = e.target.closest(".d2h-file-wrapper");
-        const fileName = fileDiffContainer.querySelector(".d2h-file-name")?.textContent?.trim() || "unknown";
-        const filesDiv = e.target.closest(".d2h-files-diff");
-        let diffSide = "new" /* New */;
-        if (filesDiv) {
-          const sides = Array.from(
-            filesDiv.querySelectorAll(":scope > .d2h-file-side-diff")
-          );
-          const sideDiv = e.target.closest(".d2h-file-side-diff");
-          if (sideDiv === sides[0]) diffSide = "old" /* Old */;
-        }
-        if (this.selection === null) {
-          this.selection = { fileName, startLine: lineNumber, diffSide };
-          return;
-        }
-        this.selection.endLine = lineNumber;
-        const sel = this.selection;
-        const row = e.target.closest("tr") || e.target.closest(".d2h-code-line-ctn")?.parentElement;
-        if (!row) return;
-        this.selection = null;
-        if (this.activeForm) {
-          this.activeForm.remove();
-          this.activeForm = null;
-        }
-        this.activeForm = showInlineCommentForm(
-          row,
-          sel,
-          (selection, text) => {
-            const branch = this.branchSelectTarget.value || "current";
-            this.storage.add(selection, text, branch);
-            this.activeForm = null;
-            this.renderComments();
-          }
-        );
-      });
+      this.outputTarget.addEventListener("mousedown", this.handleLineMouseDown);
+      this.outputTarget.addEventListener("mousemove", this.handleLineMouseMove);
+      document.addEventListener("mouseup", this.handleMouseUp);
+    }
+    disconnect() {
+      this.outputTarget.removeEventListener(
+        "mousedown",
+        this.handleLineMouseDown
+      );
+      this.outputTarget.removeEventListener(
+        "mousemove",
+        this.handleLineMouseMove
+      );
+      document.removeEventListener("mouseup", this.handleMouseUp);
     }
     branchChanged() {
       this.commitSelectTarget.value = "";
@@ -25535,7 +25634,12 @@
         outputFormat: "side-by-side"
       });
       diff2htmlUi.draw();
-      renderFileTree(this.fileExplorerTarget, this.outputTarget, data.files);
+      this.decorateLineNumbersAndRenderComments();
+      renderFileTree(
+        this.fileExplorerTarget,
+        this.outputTarget,
+        data.files
+      );
       populateCommitSelect(this.commitSelectTarget, data);
       populateBranchSelects(
         this.branchSelectTarget,
@@ -25543,7 +25647,6 @@
         data
       );
       this.storage.load();
-      this.renderComments();
     }
     toggleSidebar() {
       this.sidebarVisible = !this.sidebarVisible;
@@ -25576,19 +25679,120 @@ ${c.text}
       const reviewText = "Here's the review of the user:\n\n" + blocks.join("\n\n---\n\n");
       await navigator.clipboard.writeText(reviewText);
       this.storage.clearBranch(currentBranch);
-      this.renderComments();
+      this.decorateLineNumbersAndRenderComments();
       flashButton(btn, "Copied to clipboard!", 2e3);
     }
-    renderComments() {
+    decorateLineNumbersAndRenderComments() {
+      const lineNumbers = this.outputTarget.querySelectorAll(
+        ".d2h-code-side-linenumber"
+      );
+      lineNumbers.forEach((el) => {
+        el.classList.add("towelie-commentable");
+        if (!el.title) {
+          el.title = "Click or drag to add a comment";
+        }
+      });
       const branch = this.branchSelectTarget.value || "current";
       renderCommentIndicators(
         this.outputTarget,
         this.storage.forBranch(branch),
         (comment) => {
           this.storage.remove(comment);
-          this.renderComments();
+          this.decorateLineNumbersAndRenderComments();
         }
       );
+    }
+    // Ensures startLine <= endLine regardless of drag direction
+    normalizeSelection(selection) {
+      const start = Math.min(selection.startLine, selection.endLine);
+      const end = Math.max(selection.startLine, selection.endLine);
+      return {
+        ...selection,
+        startLine: start,
+        endLine: end
+      };
+    }
+    clearSelectionHighlight() {
+      this.selectionState.rows.forEach((row) => {
+        row.classList.remove("towelie-comment-range", "towelie-comment-anchor");
+      });
+      this.selectionState.rows.clear();
+    }
+    selectionFromLocation(location) {
+      return {
+        fileName: location.fileName,
+        startLine: location.lineNumber,
+        endLine: location.lineNumber,
+        diffSide: location.diffSide
+      };
+    }
+    matchesSelectionLocation(selection, location) {
+      return selection.fileName === location.fileName && selection.diffSide === location.diffSide;
+    }
+    // Highlights selected line range in the diff view with colored backgrounds
+    updateSelectionHighlight() {
+      if (!this.selectionState.start) return;
+      const normalized = this.normalizeSelection(this.selectionState.start);
+      this.clearSelectionHighlight();
+      const wrappers = Array.from(
+        this.outputTarget.querySelectorAll(".d2h-file-wrapper")
+      );
+      const wrapper = wrappers.find((item) => {
+        const nameEl = item.querySelector(".d2h-file-name");
+        return nameEl?.textContent?.trim() === normalized.fileName;
+      });
+      if (!wrapper) return;
+      const filesDiv = wrapper.querySelector(".d2h-files-diff");
+      if (!filesDiv) return;
+      const sides = Array.from(
+        filesDiv.querySelectorAll(":scope > .d2h-file-side-diff")
+      );
+      const sideContainer = normalized.diffSide === "old" /* Old */ ? sides[0] : sides[1];
+      if (!sideContainer) return;
+      const lineNumberEls = Array.from(
+        sideContainer.querySelectorAll(".d2h-code-side-linenumber")
+      );
+      for (const lineEl of lineNumberEls) {
+        const num = Number(lineEl.textContent);
+        if (isNaN(num) || num < normalized.startLine || num > normalized.endLine) {
+          continue;
+        }
+        const row = lineEl.closest("tr");
+        if (!row) continue;
+        row.classList.add("towelie-comment-range");
+        if (num === normalized.startLine) {
+          row.classList.add("towelie-comment-anchor");
+        }
+        this.selectionState.rows.add(row);
+      }
+    }
+    getLineContext(target) {
+      if (!(target instanceof HTMLElement)) return null;
+      const lineCell = target.closest("td.d2h-code-side-linenumber") || target.closest("td.d2h-code-side-line")?.previousElementSibling;
+      if (!lineCell) return null;
+      const lineNumber = Number(lineCell.textContent);
+      if (isNaN(lineNumber)) return null;
+      const row = lineCell.closest("tr");
+      if (!row) return null;
+      const fileDiffContainer = lineCell.closest(".d2h-file-wrapper");
+      const fileName = fileDiffContainer?.querySelector(".d2h-file-name")?.textContent?.trim() || "unknown";
+      const filesDiv = lineCell.closest(".d2h-files-diff");
+      let diffSide = "new" /* New */;
+      if (filesDiv) {
+        const sides = Array.from(
+          filesDiv.querySelectorAll(":scope > .d2h-file-side-diff")
+        );
+        const sideDiv = lineCell.closest(".d2h-file-side-diff");
+        if (sideDiv === sides[0]) diffSide = "old" /* Old */;
+      }
+      return {
+        location: {
+          fileName,
+          diffSide,
+          lineNumber
+        },
+        row
+      };
     }
   };
 

@@ -222,6 +222,9 @@
   .left-6 {
     left: calc(var(--spacing) * 6);
   }
+  .isolate {
+    isolation: isolate;
+  }
   .z-10 {
     z-index: 10;
   }

@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import webbrowser
+import socket
 from pathlib import Path
 import urllib.request
 
@@ -22,6 +23,20 @@ def open_when_ready(port: int):
         except Exception:
             time.sleep(0.2)
     webbrowser.open(url)
+
+def find_available_port(start_port: int, host: str = "127.0.0.1", attempts: int = 50) -> int:
+    for offset in range(attempts):
+        port = start_port + offset
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((host, port))
+            except OSError:
+                continue
+            return port
+    raise RuntimeError(
+        f"Unable to find an open port starting at {start_port} after {attempts} attempts."
+    )
 
 
 def check_git_repository():
@@ -59,7 +74,7 @@ def dev():
         cwd=PROJECT_ROOT,
     )
 
-    port = 4242
+    port = find_available_port(4242)
     print(f"\n  towelie → http://localhost:{port}\n")
     threading.Thread(target=open_when_ready, args=(port,), daemon=True).start()
     try:
@@ -73,7 +88,7 @@ def run():
     check_git_repository()
     import uvicorn
 
-    port = 4242
+    port = find_available_port(4242)
     print(f"\n  towelie → http://localhost:{port}\n")
     threading.Thread(target=open_when_ready, args=(port,), daemon=True).start()
     uvicorn.run("towelie.app:app", host="127.0.0.1", port=port)

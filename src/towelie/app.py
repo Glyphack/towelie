@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, asdict
 from enum import Enum
 import os
@@ -62,7 +63,16 @@ class DiffResponse:
     current_branch: str
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    global PROJECT
+    PROJECT = Project(
+        git_root=await get_git_root(), base_branch=await get_base_branch()
+    )
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 app.mount(
     "/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static"
@@ -72,7 +82,9 @@ app.mount(
 async def get_git_root() -> Path:
     _log_cmd(["git", "rev-parse", "--show-toplevel"])
     proc = await asyncio.create_subprocess_exec(
-        "git", "rev-parse", "--show-toplevel",
+        "git",
+        "rev-parse",
+        "--show-toplevel",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -88,7 +100,10 @@ async def get_base_branch():
     for branch in ("main", "master"):
         _log_cmd(["git", "rev-parse", "--verify", branch])
         proc = await asyncio.create_subprocess_exec(
-            "git", "rev-parse", "--verify", branch,
+            "git",
+            "rev-parse",
+            "--verify",
+            branch,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -334,13 +349,7 @@ class Project:
         return CheckResult(status=CheckStatus.FAIL, output=output, error=error)
 
 
-PROJECT: Project  # initialized in startup event
-
-
-@app.on_event("startup")
-async def startup():
-    global PROJECT
-    PROJECT = Project(git_root=await get_git_root(), base_branch=await get_base_branch())
+PROJECT: Project  # initialized in lifespan
 
 
 @dataclass
@@ -380,6 +389,7 @@ async def index(request: Request):
         "index.html",
         {
             "request": request,
+            "project_name": PROJECT.git_root.name,
         },
     )
 
@@ -429,5 +439,5 @@ async def checks():
     return {
         "status": results.status.value,
         "checks": parse_check_output(results),
-        "error": results.error
+        "error": results.error,
     }

@@ -17,7 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: master
       - uses: astral-sh/setup-uv@v7
       - uses: oven-sh/setup-bun@v2
       - name: Bump version in pyproject.toml

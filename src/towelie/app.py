@@ -289,15 +289,9 @@ class Project:
         is_current = branch == await self.get_current_branch()
         commits: list[CommitInfo] = [CommitInfo(hash=ALL_CHANGES, label="All changes")]
         if is_current:
-            commits.append(
-                CommitInfo(hash=STAGED, label="Staged changes")
-            )
-            commits.append(
-                CommitInfo(hash=UNSTAGED, label="Unstaged changes")
-            )
-            commits.append(
-                CommitInfo(hash=UNCOMMITTED, label="Staged + unstaged")
-            )
+            commits.append(CommitInfo(hash=STAGED, label="Staged changes"))
+            commits.append(CommitInfo(hash=UNSTAGED, label="Unstaged changes"))
+            commits.append(CommitInfo(hash=UNCOMMITTED, label="Staged + unstaged"))
         _log_cmd(["git", "log", f"{base}..{branch}", "--pretty=format:%H%x00%s"])
         proc = await asyncio.create_subprocess_exec(
             "git",
@@ -440,7 +434,7 @@ def parse_check_output(raw: CheckResult) -> list[ParsedCheck]:
 def build_page_context(request: Request) -> dict:
     view = {
         "project_name": APP_CONTEXT.project.git_root.name,
-        "js_version": str(_asset_version("bundle.js")),
+        "js_version": str(_asset_version("main.js")),
         "css_version": str(_asset_version("output.css")),
     }
 

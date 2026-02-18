@@ -218,3 +218,5 @@ __marimo__/
 scratch/
 
 **node_modules/
+src/towelie/static/
+!src/towelie/static/input.css

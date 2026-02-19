@@ -643,17 +643,6 @@ export default class ReviewController extends Controller {
     );
   }
 
-  // Ensures startLine <= endLine regardless of drag direction
-  private normalizeSelection(selection: Selection): Selection {
-    const start = Math.min(selection.startLine, selection.endLine);
-    const end = Math.max(selection.startLine, selection.endLine);
-    return {
-      ...selection,
-      startLine: start,
-      endLine: end,
-    };
-  }
-
   private clearSelectionHighlight() {
     this.selectionState.rows.forEach((row) => {
       row.classList.remove("towelie-comment-range", "towelie-comment-anchor");
@@ -683,7 +672,19 @@ export default class ReviewController extends Controller {
   // Highlights selected line range in the diff view with colored backgrounds
   private updateSelectionHighlight() {
     if (!this.selectionState.start) return;
-    const normalized = this.normalizeSelection(this.selectionState.start);
+    const start = Math.min(
+      this.selectionState.start.startLine,
+      this.selectionState.start.endLine,
+    );
+    const end = Math.max(
+      this.selectionState.start.startLine,
+      this.selectionState.start.endLine,
+    );
+    const normalized = {
+      ...this.selectionState.start,
+      startLine: start,
+      endLine: end,
+    };
     this.clearSelectionHighlight();
 
     const wrappers = Array.from(
@@ -833,7 +834,7 @@ export default class ReviewController extends Controller {
 
     const shouldCommit =
       this.selectionState.didDrag || this.selectionState.hadStart;
-    const normalized = this.normalizeSelection(this.selectionState.start);
+    const normalized = this.selectionState.start;
     this.selectionState.hadStart = false;
     this.selectionState.didDrag = false;
 

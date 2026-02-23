@@ -13,6 +13,7 @@ export default class ChecksController extends Controller {
 
   async refresh() {
     this.statusTarget.textContent = "loading…";
+    this.statusTarget.className = "text-xs text-[var(--color-text-faint)]";
     this.outputTarget.textContent = "";
 
     try {
@@ -35,7 +36,7 @@ export default class ChecksController extends Controller {
       this.outputTarget.textContent = output;
     } catch {
       this.statusTarget.textContent = "error";
-      this.statusTarget.className = "text-xs font-medium text-red-500";
+      this.statusTarget.className = "text-xs text-[var(--color-del)]";
     }
   }
 
@@ -58,11 +59,11 @@ export default class ChecksController extends Controller {
   private statusClasses(status: CheckStatus): string {
     switch (status) {
       case "pass":
-        return "text-xs font-medium text-emerald-600";
+        return "text-xs text-[var(--color-add)]";
       case "fail":
-        return "text-xs font-medium text-red-500";
+        return "text-xs text-[var(--color-del)]";
       default:
-        return "text-xs font-medium text-gray-400";
+        return "text-xs text-[var(--color-text-faint)]";
     }
   }
 

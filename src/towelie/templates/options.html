@@ -2,25 +2,25 @@
 options{% endblock %} {% block body %}
 <main class="mx-auto w-full max-w-3xl px-6 py-8" data-controller="options">
   <div class="mb-6 flex items-center gap-4">
-    <h1 class="text-xl font-semibold text-gray-900">Options</h1>
+    <h1 class="towelie-wordmark text-2xl text-[var(--color-accent)]">Options</h1>
     <a
       href="/"
-      class="rounded-md px-2 py-1 text-xs font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800"
+      class="rounded-md px-2 py-1 text-xs text-[var(--color-text-faint)] transition-colors hover:bg-[var(--color-paper-dim)] hover:text-[var(--color-text)]"
       >Back to review</a
     >
   </div>
 
   <form
-    class="space-y-6 rounded-xl border border-gray-200 bg-white p-6 shadow-sm"
+    class="space-y-6 rounded-xl border border-[var(--color-paper-line)] bg-[var(--color-paper)] p-6 shadow-[0_12px_28px_rgba(49,40,25,0.07)]"
     data-action="submit->options#save"
   >
     <div class="flex flex-col gap-2">
       <label
         for="prompt-template"
-        class="text-[10px] font-medium tracking-wide text-gray-500 uppercase"
+        class="text-[10px] font-medium tracking-[0.14em] text-[var(--color-text-faint)] uppercase"
         >AI review prompt template</label
       >
-      <p class="text-xs text-gray-500">
+      <p class="text-xs text-[var(--color-text-dim)]">
         Available placeholders: <code>{% raw %}{{comments}}{% endraw %}</code>,
         <code>{% raw %}{{branch}}{% endraw %}</code>,
         <code>{% raw %}{{comment_count}}{% endraw %}</code>.
@@ -29,20 +29,20 @@ options{% endblock %} {% block body %}
         id="prompt-template"
         data-options-target="promptTemplate"
         rows="8"
-        class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm transition-colors focus:border-gray-300 focus:ring-2 focus:ring-gray-200 focus:outline-none"
+        class="towelie-input w-full px-3 py-2 text-sm"
       ></textarea>
     </div>
 
     <div class="flex flex-col gap-2">
       <label
         for="diff-style"
-        class="text-[10px] font-medium tracking-wide text-gray-500 uppercase"
+        class="text-[10px] font-medium tracking-[0.14em] text-[var(--color-text-faint)] uppercase"
         >Diff style</label
       >
       <select
         id="diff-style"
         data-options-target="diffStyle"
-        class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm transition-colors focus:border-gray-300 focus:ring-2 focus:ring-gray-200 focus:outline-none"
+        class="towelie-input towelie-select w-full px-3 py-2 text-sm"
       >
         <option value="two_sides">Two sides</option>
         <option value="inline">Inline</option>
@@ -53,11 +53,11 @@ options{% endblock %} {% block body %}
       <button
         type="submit"
         data-options-target="saveButton"
-        class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
+        class="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[var(--color-accent-ink)] disabled:cursor-not-allowed disabled:bg-[var(--color-accent)]/50"
       >
         Save options
       </button>
-      <span data-options-target="status" class="text-sm text-gray-500"></span>
+      <span data-options-target="status" class="text-sm text-[var(--color-text-dim)]"></span>
     </div>
   </form>
 </main>

@@ -1,128 +1,174 @@
-{% extends "base.html" %} {% block title %}{{ view.project_name }} - towelie{%
-endblock %} {% block body %}
-<div class="flex min-h-screen flex-col" data-controller="review">
-  <div
-    class="sticky top-0 z-10 flex h-12 items-center border-b border-gray-100 bg-white px-4 shadow-sm"
+{% extends "base.html" %}
+{% import "icons.html" as icons %}
+{% block title %}{{ view.project_name }} - towelie{%
+endblock %} {% block html_class %}overflow-hidden{% endblock %} {% block
+body_class %}overflow-hidden{% endblock %} {% block body %}
+<div
+  class="towelie-app-shell flex h-screen overflow-hidden"
+  data-controller="review"
+  data-review-target="shell"
+>
+  <aside
+    class="towelie-sidebar flex h-full w-[220px] shrink-0 flex-col border-r border-[var(--color-paper-line)] bg-[var(--color-paper)]"
+    data-review-target="sidebar"
   >
-    <span class="text-sm font-semibold text-gray-900">towelie</span>
-    <span
-      class="ml-2 rounded-md bg-gray-100 px-2 py-0.5 text-[10px] font-medium tracking-wide text-gray-500 uppercase"
-      >code review</span
-    >
-    <a
-      href="/options"
-      class="ml-auto rounded-md px-2 py-1 text-xs font-medium text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-800"
-      >Options</a
-    >
-  </div>
-  <div class="flex flex-1">
-    <div class="sticky top-12 flex h-[calc(100vh-3rem)] shrink-0 self-start">
+    <div class="border-b border-[var(--color-paper-line)] p-3">
+      <div class="mb-2 flex items-center justify-between">
+        <span
+          class="text-[10px] font-medium tracking-[0.14em] text-[var(--color-text-faint)] uppercase"
+          >Review message</span
+        >
+        <span
+          class="font-mono text-[10px] text-[var(--color-text-faint)]"
+          data-review-target="commentCount"
+          >0 notes</span
+        >
+      </div>
+      <textarea
+        rows="3"
+        placeholder="Overall thoughts on this diff…"
+        class="towelie-input w-full resize-none rounded-md px-2.5 py-2 text-[11px]"
+        data-review-target="submitNotes"
+      ></textarea>
       <button
-        class="flex items-center self-stretch px-1 text-gray-300 transition-colors hover:bg-gray-50 hover:text-gray-500"
+        class="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--color-accent)] px-3 py-2 text-[11px] font-medium text-white transition-colors hover:bg-[var(--color-accent-ink)]"
+        type="button"
+        data-action="review#finishReview"
+      >
+        {{ icons.submit_review_icon() }}
+        Submit review
+      </button>
+    </div>
+
+    <div class="flex items-center justify-between border-b border-[var(--color-paper-line)] px-3 py-2">
+      <span
+        class="text-[10px] font-medium tracking-[0.14em] text-[var(--color-text-faint)] uppercase"
+        >Changed files</span
+      >
+      <span
+        class="rounded-full bg-[var(--color-paper-dim)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-text-faint)]"
+        data-review-target="fileCount"
+        >0</span
+      >
+    </div>
+
+    <nav
+      class="towelie-file-tree min-h-0 flex-1 overflow-y-auto py-1"
+      data-review-target="fileExplorer"
+    ></nav>
+
+    <div class="border-t border-[var(--color-paper-line)] p-2">
+      <button
+        class="flex w-full items-center justify-center gap-1.5 rounded-md py-1 text-[10px] text-[var(--color-text-faint)] transition-colors hover:bg-[var(--color-paper-dim)] hover:text-[var(--color-text-dim)]"
         type="button"
         data-action="review#toggleSidebar"
-        data-review-target="sidebarToggle"
       >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="#9ca3af"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <polyline points="15 18 9 12 15 6"></polyline>
-        </svg>
+        {{ icons.collapse_sidebar_icon() }}
+        Collapse
       </button>
-      <nav
-        class="flex w-64 shrink-0 flex-col bg-white shadow-[1px_0_3px_0_rgba(0,0,0,0.04)]"
-        data-review-target="sidebar"
-      >
-        <div class="flex-1 overflow-y-auto p-4">
-          <div class="mb-3 flex flex-col gap-1" data-controller="checks">
-            <div
-              class="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-1.5 text-xs"
-            >
-              <span
-                class="text-[10px] font-medium tracking-wide text-gray-500 uppercase"
-                >Checks</span
-              >
-              <span data-checks-target="status" class="text-gray-500">
-                loading…
-              </span>
-              <button
-                class="ml-auto text-[10px] font-medium text-gray-400 transition-colors hover:text-gray-600"
-                type="button"
-                data-action="checks#copyOutput"
-              >
-                Copy
-              </button>
-              <button
-                class="text-gray-400 transition-colors hover:text-gray-600"
-                type="button"
-                data-action="checks#refresh"
-              >
-                ↻
-              </button>
-            </div>
-            <pre
-              data-checks-target="output"
-              class="max-h-32 overflow-y-auto rounded-lg bg-gray-50 p-2 text-xs whitespace-pre-wrap text-gray-600 empty:hidden"
-            ></pre>
-          </div>
-          <div class="flex flex-col gap-4">
-            <div class="flex flex-col gap-2">
-              <label
-                class="text-[10px] font-medium tracking-wide text-gray-400 uppercase"
-                >Branch</label
-              >
-              <select
-                data-action="review#reloadReview"
-                data-review-target="branchSelect"
-                class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm transition-colors focus:border-gray-300 focus:ring-2 focus:ring-gray-200 focus:outline-none"
-              >
-                <option value="">Current branch</option>
-              </select>
-            </div>
-            <div class="flex flex-col gap-2">
-              <label
-                class="text-[10px] font-medium tracking-wide text-gray-400 uppercase"
-                >Base branch</label
-              >
-              <select
-                data-action="review#reloadReview"
-                data-review-target="baseBranchSelect"
-                class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm transition-colors focus:border-gray-300 focus:ring-2 focus:ring-gray-200 focus:outline-none"
-              ></select>
-            </div>
-            <div class="flex flex-col gap-2">
-              <label
-                class="text-[10px] font-medium tracking-wide text-gray-400 uppercase"
-                >Commit</label
-              >
-              <select
-                data-action="review#reloadReview"
-                data-review-target="commitSelect"
-                class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm transition-colors focus:border-gray-300 focus:ring-2 focus:ring-gray-200 focus:outline-none"
-              ></select>
-            </div>
-            <div data-review-target="fileExplorer"></div>
-          </div>
-        </div>
-        <div class="border-t border-gray-100 p-4">
-          <button
-            class="w-full rounded-lg bg-emerald-600 px-6 py-2.5 text-sm font-medium text-white transition-all hover:bg-emerald-700 hover:shadow-md focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 active:bg-emerald-800"
-            type="button"
-            data-action="review#finishReview"
-          >
-            Finish review
-          </button>
-        </div>
-      </nav>
     </div>
-    <div class="min-w-0 flex-1 bg-white" data-review-target="output"></div>
-  </div>
+  </aside>
+
+  <button
+    type="button"
+    class="towelie-sidebar-strip hidden h-full w-7 shrink-0 border-r border-[var(--color-paper-line)] bg-[var(--color-paper)] text-[var(--color-text-faint)] transition-colors hover:bg-[var(--color-paper-dim)]"
+    data-action="review#toggleSidebar"
+    data-review-target="sidebarStrip"
+    aria-label="Expand sidebar"
+  >
+    {{ icons.expand_sidebar_icon() }}
+  </button>
+
+  <main class="min-w-0 flex-1 overflow-y-auto" data-review-target="mainScroll">
+    <header class="border-b border-[var(--color-paper-line)] bg-[var(--color-paper)] px-4 py-2">
+      <div class="mb-2 flex items-center gap-3">
+        <span class="towelie-wordmark text-[17px] text-[var(--color-accent)]"
+          >towelie</span
+        >
+        <span class="h-5 w-px bg-[var(--color-paper-line)]"></span>
+        <a
+          href="/options"
+          class="rounded-md px-2 py-1 text-[11px] text-[var(--color-text-faint)] transition-colors hover:bg-[var(--color-paper-dim)] hover:text-[var(--color-text)]"
+          >Options</a
+        >
+      </div>
+      <div class="flex flex-wrap items-center gap-3">
+        <div class="flex items-center gap-2">
+          <label
+            class="text-[10px] tracking-[0.14em] text-[var(--color-text-faint)] uppercase"
+            >Branch</label
+          >
+          <select
+            data-action="review#reloadReview"
+            data-review-target="branchSelect"
+            class="towelie-input towelie-select min-w-44 px-2 py-1.5 font-mono text-[12px]"
+          >
+            <option value="">Current branch</option>
+          </select>
+        </div>
+        <div class="flex items-center gap-2">
+          <label
+            class="text-[10px] tracking-[0.14em] text-[var(--color-text-faint)] uppercase"
+            >Base</label
+          >
+          <select
+            data-action="review#reloadReview"
+            data-review-target="baseBranchSelect"
+            class="towelie-input towelie-select min-w-32 px-2 py-1.5 font-mono text-[12px]"
+          ></select>
+        </div>
+        <div class="flex items-center gap-2">
+          <label
+            class="text-[10px] tracking-[0.14em] text-[var(--color-text-faint)] uppercase"
+            >Commit</label
+          >
+          <select
+            data-action="review#reloadReview"
+            data-review-target="commitSelect"
+            class="towelie-input towelie-select max-w-[360px] min-w-56 px-2 py-1.5 font-mono text-[11px]"
+          ></select>
+        </div>
+      </div>
+    </header>
+
+    <section
+      class="border-b border-[var(--color-paper-line)] bg-[var(--color-paper)] px-4 py-2"
+      data-controller="checks"
+    >
+      <div class="mb-1 flex items-center gap-2">
+        <span
+          class="text-[10px] font-medium tracking-[0.14em] text-[var(--color-text-faint)] uppercase"
+          >Checks</span
+        >
+        <span
+          data-checks-target="status"
+          class="text-xs text-[var(--color-text-faint)]"
+          >loading…</span
+        >
+        <button
+          class="ml-auto text-[11px] text-[var(--color-text-faint)] transition-colors hover:text-[var(--color-text)]"
+          type="button"
+          data-action="checks#copyOutput"
+        >
+          Copy
+        </button>
+        <button
+          class="text-[var(--color-text-faint)] transition-colors hover:text-[var(--color-text)]"
+          type="button"
+          data-action="checks#refresh"
+        >
+          ↻
+        </button>
+      </div>
+      <pre
+        data-checks-target="output"
+        class="towelie-check-output rounded-md border border-[var(--color-paper-line)] bg-[var(--color-surface-recessed)] p-2 font-mono text-[11px] whitespace-pre-wrap text-[var(--color-text-dim)] empty:hidden"
+      ></pre>
+    </section>
+
+    <section class="py-2">
+      <div class="w-full" data-review-target="output"></div>
+    </section>
+  </main>
 </div>
 {% endblock %}

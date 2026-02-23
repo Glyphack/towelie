@@ -20,7 +20,7 @@ export default class OptionsController extends Controller {
     event.preventDefault();
 
     this.saveButtonTarget.disabled = true;
-    this.setStatus("Saving...", "text-sm text-gray-500");
+    this.setStatus("Saving...", "text-sm text-[var(--color-text-dim)]");
 
     const payload: AppOptions = {
       prompt: {
@@ -41,9 +41,9 @@ export default class OptionsController extends Controller {
         tag.textContent = JSON.stringify(saved);
       }
 
-      this.setStatus("Saved", "text-sm text-emerald-600");
+      this.setStatus("Saved", "text-sm text-[var(--color-add)]");
     } catch {
-      this.setStatus("Failed to save options", "text-sm text-red-500");
+      this.setStatus("Failed to save options", "text-sm text-[var(--color-del)]");
     } finally {
       this.saveButtonTarget.disabled = false;
     }

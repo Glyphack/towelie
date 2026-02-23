@@ -4,17 +4,17 @@
   "type": "module",
   "dependencies": {
     "@hotwired/stimulus": "^3.2.2",
-    "@tailwindcss/cli": "^4.1.18",
     "@tailwindcss/language-server": "^0.14.29",
     "diff2html": "^3.4.56",
     "highlight.js": "^11.11.1",
     "tailwindcss": "^4.1.18"
   },
   "scripts": {
-    "build": "bun install --frozen-lockfile && bun build web/src/main.ts --bundle --outdir=./src/towelie/static && bunx @tailwindcss/cli -i ./src/towelie/static/input.css -o ./src/towelie/static/output.css --minify",
-    "watch": "sh -c 'bun build web/src/main.ts --bundle --outdir=./src/towelie/static --watch & bunx @tailwindcss/cli -i ./src/towelie/static/input.css -o ./src/towelie/static/output.css --watch & wait'"
+    "build": "bun install --frozen-lockfile && bun build web/src/main.ts --bundle --outdir=./src/towelie/static && tailwindcss -i ./src/towelie/static/input.css -o ./src/towelie/static/output.css --minify",
+    "watch": "sh -c 'bun build web/src/main.ts --bundle --outdir=./src/towelie/static --watch & tailwindcss -i ./src/towelie/static/input.css -o ./src/towelie/static/output.css --watch & wait'"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.1.18",
     "prettier": "3.8.1",
     "prettier-plugin-tailwindcss": "^0.7.2",
     "@types/bun": "latest"

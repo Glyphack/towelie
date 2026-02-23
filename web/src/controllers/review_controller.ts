@@ -1,12 +1,13 @@
 import { Controller } from "@hotwired/stimulus";
 import { Diff2HtmlUI } from "diff2html/lib/ui/js/diff2html-ui-slim.js";
 import { getDiff, getInfo, getOptions } from "../api";
-import "../comment.css";
 
 enum DiffSide {
   Old = "old",
   New = "new",
 }
+
+type FileStatus = "M" | "A" | "D";
 
 interface Selection {
   fileName: string;
@@ -15,19 +16,23 @@ interface Selection {
   diffSide: DiffSide;
 }
 
-interface Comment {
+interface CommentRecord {
+  id: string;
   selection: Selection;
   text: string;
   branch: string;
+  author: "You";
+  createdAt: number;
+  updatedAt: number;
 }
 
 interface SelectionState {
-  start: Selection | null;
-  rows: Set<HTMLElement>;
-  row: HTMLElement | null;
+  start: LineLocation | null;
+  end: LineLocation | null;
   selecting: boolean;
-  hadStart: boolean;
-  didDrag: boolean;
+  rows: Set<HTMLElement>;
+  dragMoved: boolean;
+  usedAnchor: boolean;
 }
 
 interface LineLocation {
@@ -38,69 +43,129 @@ interface LineLocation {
 
 interface LineContext {
   location: LineLocation;
-  row: HTMLElement;
+  row: HTMLTableRowElement;
+}
+
+interface FileEntry {
+  fileName: string;
+  pathParts: string[];
+  status: FileStatus;
+  anchorId: string;
+  wrapper: HTMLElement;
+}
+
+interface FileTreeNode {
+  path: string;
+  folders: Map<string, FileTreeNode>;
+  files: FileEntry[];
 }
 
 function applyPromptTemplate(
   template: string,
   values: { comments: string; branch: string; comment_count: string },
 ): string {
-  const replaceToken = (source: string, token: string, value: string): string =>
-    source.split(token).join(value);
-
-  let result = template;
-  result = replaceToken(result, "{{comments}}", values.comments);
-  result = replaceToken(result, "{{branch}}", values.branch);
-  result = replaceToken(result, "{{comment_count}}", values.comment_count);
-  return result;
+  return template
+    .split("{{comments}}")
+    .join(values.comments)
+    .split("{{branch}}")
+    .join(values.branch)
+    .split("{{comment_count}}")
+    .join(values.comment_count);
 }
 
-// Temporarily changes button text and disables it, then restores original state after delay
 function flashButton(btn: HTMLButtonElement, message: string, ms: number) {
   const original = btn.textContent;
   btn.textContent = message;
   btn.disabled = true;
-  setTimeout(() => {
+  window.setTimeout(() => {
     btn.textContent = original;
     btn.disabled = false;
   }, ms);
 }
 
+function makeId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 class CommentStorage {
   private static KEY = "towelie-comments";
-  private comments: Comment[] = [];
+  private comments: CommentRecord[] = [];
 
   load() {
     const stored = localStorage.getItem(CommentStorage.KEY);
-    if (stored) {
-      try {
-        this.comments = JSON.parse(stored);
-      } catch {
-        this.comments = [];
-        localStorage.removeItem(CommentStorage.KEY);
-      }
+    if (!stored) {
+      this.comments = [];
+      return;
+    }
+
+    try {
+      const raw = JSON.parse(stored) as Array<Partial<CommentRecord>>;
+      const now = Date.now();
+      this.comments = raw
+        .filter(
+          (item): item is Partial<CommentRecord> & { selection: Selection } =>
+            Boolean(item?.selection && item.text && item.branch),
+        )
+        .map((item) => {
+          const createdAt =
+            typeof item.createdAt === "number" ? item.createdAt : now;
+          const updatedAt =
+            typeof item.updatedAt === "number" ? item.updatedAt : createdAt;
+          return {
+            id: typeof item.id === "string" ? item.id : makeId(),
+            selection: item.selection,
+            text: item.text ?? "",
+            branch: item.branch ?? "current",
+            author: "You",
+            createdAt,
+            updatedAt,
+          };
+        });
+      this.save();
+    } catch {
+      this.comments = [];
+      localStorage.removeItem(CommentStorage.KEY);
     }
   }
 
-  add(selection: Selection, text: string, branch: string) {
-    this.comments.push({ selection, text, branch });
+  add(selection: Selection, text: string, branch: string): CommentRecord {
+    const now = Date.now();
+    const comment: CommentRecord = {
+      id: makeId(),
+      selection,
+      text,
+      branch,
+      author: "You",
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.comments.push(comment);
+    this.save();
+    return comment;
+  }
+
+  remove(id: string) {
+    this.comments = this.comments.filter((comment) => comment.id !== id);
     this.save();
   }
 
-  remove(comment: Comment) {
-    const idx = this.comments.indexOf(comment);
-    if (idx !== -1) {
-      this.comments.splice(idx, 1);
-      this.save();
-    }
+  update(id: string, text: string) {
+    const comment = this.comments.find((entry) => entry.id === id);
+    if (!comment) return;
+    comment.text = text;
+    comment.updatedAt = Date.now();
+    comment.author = "You";
+    this.save();
   }
 
-  forBranch(branch: string): Comment[] {
-    return this.comments.filter((c) => c.branch === branch);
+  forBranch(branch: string): CommentRecord[] {
+    return this.comments.filter((comment) => comment.branch === branch);
   }
 
   clearBranch(branch: string) {
-    this.comments = this.comments.filter((c) => c.branch !== branch);
+    this.comments = this.comments.filter(
+      (comment) => comment.branch !== branch,
+    );
     this.save();
   }
 
@@ -109,373 +174,137 @@ class CommentStorage {
   }
 }
 
-type FileTree = Map<string, string | FileTree>;
+function parseFileStatuses(diffText: string): Map<string, FileStatus> {
+  const statuses = new Map<string, FileStatus>();
+  const lines = diffText.split("\n");
 
-function el<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  attrs: Omit<Partial<HTMLElementTagNameMap[K]>, "style"> & {
-    style?: Partial<CSSStyleDeclaration>;
-  },
-  children?: (HTMLElement | string)[],
-): HTMLElementTagNameMap[K] {
-  const element = document.createElement(tag);
-  const { style, ...rest } = attrs;
-  Object.assign(element, rest);
-  if (style) Object.assign(element.style, style);
-  for (const child of children ?? []) {
-    if (typeof child === "string") {
-      element.appendChild(document.createTextNode(child));
-    } else {
-      element.appendChild(child);
+  let oldPath = "";
+  let newPath = "";
+  let status: FileStatus = "M";
+
+  const flush = () => {
+    if (status === "D") {
+      if (oldPath) statuses.set(oldPath, "D");
+      return;
     }
-  }
-  return element;
-}
+    if (newPath) statuses.set(newPath, status);
+    else if (oldPath) statuses.set(oldPath, status);
+  };
 
-function buildHrefMap(outputEl: HTMLElement): Map<string, string> {
-  const hrefMap = new Map<string, string>();
-  outputEl
-    .querySelectorAll<HTMLAnchorElement>(".d2h-file-list a.d2h-file-name")
-    .forEach((a) => {
-      const name = a.textContent?.trim();
-      if (name && a.hash) hrefMap.set(name, a.hash);
-    });
-  return hrefMap;
-}
-
-function buildFileTree(files: string[]): FileTree {
-  const root: FileTree = new Map();
-  for (const file of files ?? []) {
-    const parts = file.split("/");
-    let current = root;
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      if (i === parts.length - 1) {
-        current.set(part, file);
-      } else {
-        if (!current.has(part)) {
-          current.set(part, new Map());
-        }
-        current = current.get(part) as FileTree;
-      }
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      if (oldPath || newPath) flush();
+      const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+      oldPath = match?.[1] ?? "";
+      newPath = match?.[2] ?? "";
+      status = "M";
+      continue;
     }
+    if (!oldPath && !newPath) continue;
+
+    if (line.startsWith("new file mode ")) status = "A";
+    if (line.startsWith("deleted file mode ")) status = "D";
+    if (line.startsWith("rename from ")) oldPath = line.slice(12).trim();
+    if (line.startsWith("rename to ")) newPath = line.slice(10).trim();
   }
-  return root;
+
+  if (oldPath || newPath) flush();
+  return statuses;
 }
 
-function renderTreeLevel(
-  parent: HTMLElement,
-  tree: FileTree,
-  hrefMap: Map<string, string>,
-  depth: number,
-) {
-  const entries = Array.from(tree.entries());
-  const folders = entries.filter(([, v]) => v instanceof Map) as [
-    string,
-    FileTree,
-  ][];
-  const files = entries.filter(([, v]) => typeof v === "string") as [
-    string,
-    string,
-  ][];
-  const indent = { paddingLeft: `${depth * 12}px` };
+function detectStatus(
+  fileName: string,
+  statuses: Map<string, FileStatus>,
+  diffFiles: string[],
+): FileStatus {
+  if (statuses.has(fileName)) return statuses.get(fileName) ?? "M";
 
-  for (const [name, subtree] of folders) {
-    parent.appendChild(
-      el("div", { style: indent }, [
-        el("span", {
-          className:
-            "flex items-center text-[10px] font-medium uppercase tracking-wide text-gray-400 gap-1.5 py-1",
-          textContent: `${name}`,
-        }),
-      ]),
-    );
-    renderTreeLevel(parent, subtree, hrefMap, depth + 1);
+  if (fileName.includes(" -> ")) {
+    const [from, to] = fileName.split(" -> ").map((part) => part.trim());
+    if (statuses.has(to)) return statuses.get(to) ?? "M";
+    if (statuses.has(from)) return statuses.get(from) ?? "M";
   }
 
-  for (const [name, fullPath] of files) {
-    const link = el("a", {
-      className:
-        "block truncate rounded-md px-2 py-1 text-xs text-gray-600 transition-colors hover:text-gray-900 hover:bg-gray-50 flex-1",
-      textContent: name,
-      href: hrefMap.get(fullPath) ?? "",
-    });
-
-    parent.appendChild(
-      el("div", { className: "flex items-center gap-1 group", style: indent }, [
-        link,
-      ]),
-    );
-  }
-}
-
-function renderFileTree(
-  container: HTMLElement,
-  outputEl: HTMLElement,
-  files: string[],
-) {
-  container.innerHTML = "";
-
-  const hrefMap = buildHrefMap(outputEl);
-  const tree = buildFileTree(files);
-
-  const treeContainer = el("div", { className: "flex flex-col" });
-  renderTreeLevel(treeContainer, tree, hrefMap, 0);
-
-  container.appendChild(
-    el("h3", {
-      className:
-        "text-[10px] font-medium uppercase tracking-wide text-gray-400 mb-3 mt-1",
-      textContent: "Files",
-    }),
+  const bySuffix = diffFiles.find(
+    (candidate) => candidate.endsWith(fileName) || fileName.endsWith(candidate),
   );
-  container.appendChild(treeContainer);
-}
-
-function renderCommentIndicators(
-  outputEl: HTMLElement,
-  comments: Comment[],
-  popupSignal: AbortSignal,
-  onDelete: (comment: Comment) => void,
-) {
-  outputEl.querySelectorAll(".towelie-comment-btn").forEach((el) => {
-    if (el.tagName === "TR") {
-      el.querySelectorAll(".d2h-code-side-linenumber").forEach((ln) => {
-        (ln as HTMLElement).style.backgroundColor = "";
-      });
-      el.classList.remove("towelie-comment-btn");
-    } else {
-      el.remove();
-    }
-  });
-  outputEl
-    .querySelectorAll(".towelie-comment-popup")
-    .forEach((popup) => popup.remove());
-
-  if (comments.length === 0) return;
-
-  const fileWrappers = Array.from(
-    outputEl.querySelectorAll(".d2h-file-wrapper"),
-  );
-
-  for (const comment of comments) {
-    const { fileName, startLine, diffSide } = comment.selection;
-
-    for (const wrapper of fileWrappers) {
-      const fileNameEl = wrapper.querySelector(".d2h-file-name");
-      const wrapperFileName = fileNameEl?.textContent?.trim();
-      if (wrapperFileName !== fileName) continue;
-
-      const filesDiv = wrapper.querySelector(".d2h-files-diff");
-      if (!filesDiv) continue;
-
-      const sides = Array.from(
-        filesDiv.querySelectorAll(":scope > .d2h-file-side-diff"),
-      );
-      const sideContainer = diffSide === DiffSide.Old ? sides[0] : sides[1];
-      if (!sideContainer) continue;
-
-      const { endLine } = comment.selection;
-      const lineNumberEls = Array.from(
-        sideContainer.querySelectorAll(".d2h-code-side-linenumber"),
-      );
-      let firstRow: HTMLElement | null = null;
-      for (const lineEl of lineNumberEls) {
-        const num = Number((lineEl as HTMLElement).textContent);
-        if (isNaN(num) || num < startLine || num > endLine) continue;
-
-        const row = (lineEl as HTMLElement).closest("tr") as HTMLElement;
-        if (!row) continue;
-
-        row.classList.add("towelie-comment-btn");
-        (lineEl as HTMLElement).style.backgroundColor =
-          "rgba(250, 204, 21, 0.15)";
-
-        if (!firstRow) firstRow = row;
-      }
-
-      if (!firstRow) continue;
-      firstRow.style.position = "relative";
-
-      const btn = document.createElement("button");
-      btn.className =
-        "towelie-comment-btn absolute -left-1 top-0 w-5 h-5 rounded-full bg-amber-400 shadow-sm text-[10px] leading-5 text-center cursor-pointer transition-colors hover:bg-amber-500 z-10";
-      btn.textContent = "💬";
-      btn.title = comment.text;
-
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const existing = firstRow!.querySelector(".towelie-comment-popup");
-        if (existing) {
-          existing.remove();
-          return;
-        }
-        const popup = document.createElement("div");
-        popup.className =
-          "towelie-comment-popup absolute left-6 top-0 w-72 rounded-xl border border-gray-100 p-3 bg-white shadow-xl text-sm z-20";
-        popup.addEventListener("click", (ev) => ev.stopPropagation());
-
-        const textEl = document.createElement("p");
-        textEl.textContent = comment.text;
-        popup.appendChild(textEl);
-
-        const deleteBtn = document.createElement("button");
-        deleteBtn.className =
-          "mt-2 rounded-md bg-red-50 px-2 py-0.5 text-xs text-red-600 hover:bg-red-100";
-        deleteBtn.textContent = "Delete";
-        deleteBtn.addEventListener("click", () => onDelete(comment));
-        popup.appendChild(deleteBtn);
-        firstRow!.appendChild(popup);
-
-        const closeHandler = () => {
-          popup.remove();
-        };
-        setTimeout(
-          () =>
-            document.addEventListener("click", closeHandler, {
-              once: true,
-              signal: popupSignal,
-            }),
-          0,
-        );
-      });
-
-      firstRow.appendChild(btn);
-    }
-  }
-}
-
-function showInlineCommentForm(
-  anchor: HTMLElement,
-  selection: Selection,
-  onSubmit: (selection: Selection, text: string) => void,
-  onClose: () => void,
-): HTMLElement {
-  const { fileName, startLine, endLine, diffSide } = selection;
-
-  const form = document.createElement("tr");
-  form.innerHTML = `
-    <td colspan="99" class="bg-gray-50 border border-gray-100">
-      <div class="sticky left-0 flex flex-col gap-2 p-3">
-        <span class="text-xs text-gray-500">${fileName} (${diffSide}) : ${startLine}-${endLine}</span>
-        <textarea
-          class="w-full rounded-lg border border-gray-200 p-2 text-sm shadow-sm focus:ring-2 focus:ring-gray-200 focus:outline-none"
-          rows="3"
-          placeholder="Write a comment..."
-          style="overflow-wrap: break-word; word-break: break-word;"
-        ></textarea>
-        <div class="flex gap-2">
-          <button
-            type="button"
-            class="rounded-lg bg-gray-900 px-3 py-1 text-sm text-white hover:bg-gray-800"
-            data-action="submit"
-          >
-            Comment
-          </button>
-          <button
-            type="button"
-            class="rounded-lg bg-white ring-1 ring-gray-200 px-3 py-1 text-sm hover:bg-gray-50"
-            data-action="cancel"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    </td>
-  `;
-
-  form
-    .querySelector('[data-action="submit"]')!
-    .addEventListener("click", () => {
-      const textarea = form.querySelector("textarea")!;
-      const text = textarea.value.trim();
-      if (text) {
-        onSubmit(selection, text);
-        form.remove();
-        onClose();
-      }
-    });
-
-  form
-    .querySelector('[data-action="cancel"]')!
-    .addEventListener("click", () => {
-      form.remove();
-      onClose();
-    });
-
-  anchor.insertAdjacentElement("afterend", form);
-
-  const scrollParent = form.closest(
-    ".d2h-file-side-diff",
-  ) as HTMLElement | null;
-  const innerDiv = form.querySelector("div")!;
-  if (scrollParent) {
-    innerDiv.style.width = `${scrollParent.clientWidth - 24}px`;
-  }
-
-  form.querySelector("textarea")!.focus();
-  return form;
+  if (bySuffix && statuses.has(bySuffix)) return statuses.get(bySuffix) ?? "M";
+  return "M";
 }
 
 export default class ReviewController extends Controller {
   static targets = [
+    "shell",
+    "sidebar",
+    "sidebarStrip",
+    "sidebarToggleIcon",
+    "mainScroll",
     "output",
     "fileExplorer",
     "branchSelect",
     "baseBranchSelect",
     "commitSelect",
-    "sidebar",
-    "sidebarToggle",
+    "fileCount",
+    "commentCount",
+    "submitNotes",
   ];
 
+  declare readonly shellTarget: HTMLElement;
+  declare readonly sidebarTarget: HTMLElement;
+  declare readonly sidebarStripTarget: HTMLButtonElement;
+  declare readonly sidebarToggleIconTarget: HTMLElement;
+  declare readonly mainScrollTarget: HTMLElement;
   declare readonly outputTarget: HTMLElement;
   declare readonly fileExplorerTarget: HTMLElement;
   declare readonly branchSelectTarget: HTMLSelectElement;
   declare readonly baseBranchSelectTarget: HTMLSelectElement;
   declare readonly commitSelectTarget: HTMLSelectElement;
-  declare readonly sidebarTarget: HTMLElement;
-  declare readonly sidebarToggleTarget: HTMLElement;
+  declare readonly fileCountTarget: HTMLElement;
+  declare readonly commentCountTarget: HTMLElement;
+  declare readonly submitNotesTarget: HTMLTextAreaElement;
 
   private storage = new CommentStorage();
   private currentBranchName = "current";
-  private activeForm: HTMLElement | null = null;
-  private commentPopupAbortController: AbortController | null = null;
+  private sidebarVisible = true;
+  private fileEntries: FileEntry[] = [];
+  private fileButtons = new Map<string, HTMLButtonElement>();
+  private activeFileId = "";
+  private scrollTicking = false;
+  private openPanelRow: HTMLTableRowElement | null = null;
+  private openPanelKey = "";
   private selectionState: SelectionState = {
     start: null,
-    rows: new Set<HTMLElement>(),
-    row: null,
+    end: null,
     selecting: false,
-    hadStart: false,
-    didDrag: false,
+    rows: new Set<HTMLElement>(),
+    dragMoved: false,
+    usedAnchor: false,
   };
-  private sidebarVisible = true;
 
   async connect() {
     this.storage.load();
     await this.reloadReview();
-    this.outputTarget.addEventListener("mousedown", this.HighlightSelectedLine);
-    this.outputTarget.addEventListener("mousemove", this.highlightLineNumber);
-    document.addEventListener("mouseup", this.ConfirmCommentSelection);
+    this.outputTarget.addEventListener("mousedown", this.onMouseDown);
+    this.outputTarget.addEventListener("mousemove", this.onMouseMove);
+    document.addEventListener("mouseup", this.onMouseUp);
+    this.mainScrollTarget.addEventListener("scroll", this.onMainScroll);
   }
 
   disconnect() {
-    this.outputTarget.removeEventListener(
-      "mousedown",
-      this.HighlightSelectedLine,
-    );
-    this.outputTarget.removeEventListener(
-      "mousemove",
-      this.highlightLineNumber,
-    );
-    document.removeEventListener("mouseup", this.ConfirmCommentSelection);
+    this.outputTarget.removeEventListener("mousedown", this.onMouseDown);
+    this.outputTarget.removeEventListener("mousemove", this.onMouseMove);
+    document.removeEventListener("mouseup", this.onMouseUp);
+    this.mainScrollTarget.removeEventListener("scroll", this.onMainScroll);
   }
 
   async reloadReview() {
     await this.populateInfo();
+    this.closePanel();
+    this.clearSelectionHighlight();
+
     const branch = this.branchSelectTarget.value;
     const base = this.baseBranchSelectTarget.value;
     const commit = this.commitSelectTarget.value;
-
     const [diff, options] = await Promise.all([
       getDiff({ branch, base, commit }),
       getOptions(),
@@ -486,23 +315,23 @@ export default class ReviewController extends Controller {
 
     this.outputTarget.innerHTML = "";
     const diff2htmlUi = new Diff2HtmlUI(this.outputTarget, diff.diff.diff, {
-      drawFileList: true,
+      drawFileList: false,
       matching: "lines",
       outputFormat,
       fileContentToggle: true,
-      diffMaxChanges: 1000,
+      stickyFileHeaders: false,
+      diffMaxChanges: 50000,
     });
     diff2htmlUi.draw();
 
-    this.outputTarget
-      .querySelectorAll<HTMLElement>(".d2h-file-wrapper")
-      .forEach((wrapper) => {
-        wrapper.style.contentVisibility = "auto";
-        wrapper.style.containIntrinsicSize = "auto 500px";
-      });
-    this.decorateLineNumbersAndRenderComments();
-    renderFileTree(this.fileExplorerTarget, this.outputTarget, diff.diff.files);
-    this.storage.load();
+    const statusMap = parseFileStatuses(diff.diff.diff);
+    this.fileEntries = this.collectFileEntries(statusMap, diff.diff.files);
+    this.fileCountTarget.textContent = String(this.fileEntries.length);
+
+    this.renderFileTree();
+    this.normalizeDiffRows();
+    this.renderComments();
+    this.updateActiveFileFromScroll();
   }
 
   async populateInfo() {
@@ -544,6 +373,7 @@ export default class ReviewController extends Controller {
     } else {
       baseBranchSelect.value = info.base_branch;
     }
+
     const selectedBranchName = branchSelect.value || info.current_branch;
     const selectedBranch = info.branches.find(
       (branch) => branch.name === selectedBranchName,
@@ -563,20 +393,23 @@ export default class ReviewController extends Controller {
       : commits.length > 0
         ? commits[0].hash
         : "";
-
-    return info;
   }
 
   toggleSidebar() {
     this.sidebarVisible = !this.sidebarVisible;
-    const svg = this.sidebarToggleTarget.querySelector("svg");
-    if (this.sidebarVisible) {
-      this.sidebarTarget.style.display = "";
-      if (svg) svg.style.transform = "";
-    } else {
-      this.sidebarTarget.style.display = "none";
-      if (svg) svg.style.transform = "scaleX(-1)";
-    }
+    this.shellTarget.classList.toggle(
+      "is-sidebar-collapsed",
+      !this.sidebarVisible,
+    );
+    this.sidebarStripTarget.classList.toggle("hidden", this.sidebarVisible);
+    this.sidebarStripTarget.setAttribute(
+      "aria-hidden",
+      String(this.sidebarVisible),
+    );
+    this.sidebarToggleIconTarget.classList.toggle(
+      "is-collapsed",
+      !this.sidebarVisible,
+    );
   }
 
   async finishReview(e: Event) {
@@ -585,27 +418,40 @@ export default class ReviewController extends Controller {
     const storageBranch = selectedBranch || "current";
     const renderedBranch = selectedBranch || this.currentBranchName;
     const branchComments = this.storage.forBranch(storageBranch);
+    const overallNotes = this.submitNotesTarget.value.trim();
 
-    if (branchComments.length === 0) {
+    if (branchComments.length === 0 && !overallNotes) {
       flashButton(btn, "No comments to copy", 2000);
       return;
     }
 
-    const blocks = branchComments.map((c) => {
-      const s = c.selection;
+    const blocks = branchComments.map((comment) => {
+      const selection = comment.selection;
       const sideLabel =
-        s.diffSide === DiffSide.Old
+        selection.diffSide === DiffSide.Old
           ? "old code (before the change)"
           : "new code (after the change)";
-      return `${s.fileName} lines ${s.startLine}-${s.endLine} on the ${sideLabel}\n\n\`\`\`\n${c.text}\n\`\`\``;
+      const lineLabel =
+        selection.startLine === selection.endLine
+          ? `${selection.startLine}`
+          : `${selection.startLine}-${selection.endLine}`;
+      return `${selection.fileName} lines ${lineLabel} on the ${sideLabel}\n\n\`\`\`\n${comment.text}\n\`\`\``;
     });
-    const commentsBlock = blocks.join("\n\n---\n\n");
+
+    let commentsBlock = blocks.join("\n\n---\n\n");
+    if (overallNotes) {
+      commentsBlock = commentsBlock
+        ? `Overall notes:\n${overallNotes}\n\n---\n\n${commentsBlock}`
+        : `Overall notes:\n${overallNotes}`;
+    }
+
     const template = (await getOptions()).prompt.template;
     let reviewText = applyPromptTemplate(template, {
       comments: commentsBlock,
       branch: renderedBranch,
       comment_count: String(branchComments.length),
     });
+
     if (!template.includes("{{comments}}")) {
       const trimmed = reviewText.trimEnd();
       reviewText = trimmed ? `${trimmed}\n\n${commentsBlock}` : commentsBlock;
@@ -613,151 +459,642 @@ export default class ReviewController extends Controller {
 
     await navigator.clipboard.writeText(reviewText);
     this.storage.clearBranch(storageBranch);
-    this.decorateLineNumbersAndRenderComments();
+    this.renderComments();
     flashButton(btn, "Copied to clipboard!", 2000);
   }
 
-  private decorateLineNumbersAndRenderComments() {
-    this.commentPopupAbortController?.abort();
-    this.commentPopupAbortController = new AbortController();
+  private collectFileEntries(
+    statuses: Map<string, FileStatus>,
+    diffFiles: string[],
+  ): FileEntry[] {
+    return Array.from(
+      this.outputTarget.querySelectorAll<HTMLElement>(".d2h-file-wrapper"),
+    )
+      .map((wrapper, index) => {
+        const fileName =
+          wrapper.querySelector(".d2h-file-name")?.textContent?.trim() ||
+          `file-${index + 1}`;
+        const anchorId = `towelie-file-${index + 1}`;
+        wrapper.id = anchorId;
+        wrapper.dataset.fileName = fileName;
 
-    const lineNumbers = this.outputTarget.querySelectorAll<HTMLElement>(
-      ".d2h-code-side-linenumber",
+        const split = fileName.split("/");
+
+        return {
+          fileName,
+          pathParts: split,
+          status: detectStatus(fileName, statuses, diffFiles),
+          anchorId,
+          wrapper,
+        };
+      })
+      .sort((a, b) => a.fileName.localeCompare(b.fileName));
+  }
+
+  private renderFileTree() {
+    this.fileButtons.clear();
+    this.fileExplorerTarget.innerHTML = "";
+
+    const comments = this.storage.forBranch(this.currentStorageBranch());
+    const commentedFiles = new Set(
+      comments.map((comment) => comment.selection.fileName),
     );
-    lineNumbers.forEach((el) => {
-      el.classList.add("towelie-commentable");
-      if (!el.title) {
-        el.title = "Click or drag to add a comment";
-      }
+
+    const root: FileTreeNode = {
+      path: "",
+      folders: new Map<string, FileTreeNode>(),
+      files: [],
+    };
+
+    this.fileEntries.forEach((entry) => {
+      let node = root;
+      const directories = entry.pathParts.slice(0, -1);
+      directories.forEach((directory) => {
+        const nextPath = node.path ? `${node.path}/${directory}` : directory;
+        if (!node.folders.has(directory)) {
+          node.folders.set(directory, {
+            path: nextPath,
+            folders: new Map<string, FileTreeNode>(),
+            files: [],
+          });
+        }
+        node = node.folders.get(directory)!;
+      });
+      node.files.push(entry);
     });
 
-    const branch = this.branchSelectTarget.value || "current";
-    renderCommentIndicators(
-      this.outputTarget,
-      this.storage.forBranch(branch),
-      this.commentPopupAbortController.signal,
-      (comment) => {
-        this.storage.remove(comment);
-        this.decorateLineNumbersAndRenderComments();
-      },
-    );
-  }
+    const renderNode = (node: FileTreeNode, depth: number) => {
+      Array.from(node.folders.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .forEach(([name, folderNode]) => {
+          const folderRow = document.createElement("div");
+          folderRow.className = "towelie-tree-folder";
+          folderRow.style.paddingLeft = `${12 + depth * 14}px`;
+          folderRow.innerHTML = `
+            <span class="towelie-tree-folder-icon">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h5l2 2h11v10a2 2 0 0 1-2 2H3z"></path><path d="M3 7V5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"></path></svg>
+            </span>
+            <span class="towelie-tree-folder-name">${name}</span>
+          `;
+          this.fileExplorerTarget.appendChild(folderRow);
+          renderNode(folderNode, depth + 1);
+        });
 
-  // Ensures startLine <= endLine regardless of drag direction
-  private normalizeSelection(selection: Selection): Selection {
-    const start = Math.min(selection.startLine, selection.endLine);
-    const end = Math.max(selection.startLine, selection.endLine);
-    return {
-      ...selection,
-      startLine: start,
-      endLine: end,
+      node.files
+        .sort((a, b) => a.fileName.localeCompare(b.fileName))
+        .forEach((entry) => {
+          const row = document.createElement("button");
+          row.type = "button";
+          row.className = "towelie-tree-file";
+          row.dataset.anchorId = entry.anchorId;
+          row.style.paddingLeft = `${12 + depth * 14}px`;
+
+          const icon = document.createElement("span");
+          icon.className = "towelie-tree-icon";
+          icon.innerHTML =
+            '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>';
+
+          const name = document.createElement("span");
+          name.className = "towelie-tree-name";
+          name.textContent =
+            entry.pathParts[entry.pathParts.length - 1] ?? entry.fileName;
+
+          const badge = document.createElement("span");
+          badge.className = `towelie-tree-status towelie-tree-status-${entry.status.toLowerCase()}`;
+          badge.textContent = entry.status;
+
+          const dot = document.createElement("span");
+          dot.className = "towelie-tree-comment-dot";
+          if (!commentedFiles.has(entry.fileName)) {
+            dot.classList.add("hidden");
+          }
+
+          row.append(icon, name, badge, dot);
+          row.addEventListener("click", () =>
+            this.scrollToFile(entry.anchorId),
+          );
+          this.fileExplorerTarget.appendChild(row);
+          this.fileButtons.set(entry.anchorId, row);
+        });
     };
+
+    renderNode(root, 0);
   }
 
-  private clearSelectionHighlight() {
+  private normalizeDiffRows() {
+    this.outputTarget
+      .querySelectorAll<HTMLTableRowElement>(".towelie-comment-panel-row")
+      .forEach((row) => row.remove());
+
+    const rows =
+      this.outputTarget.querySelectorAll<HTMLTableRowElement>(
+        ".d2h-diff-tbody tr",
+      );
+    rows.forEach((row) => {
+      row.classList.remove("towelie-diff-row", "has-comment");
+      row
+        .querySelectorAll<HTMLElement>(".towelie-comment-gutter")
+        .forEach((gutter) => gutter.remove());
+      row
+        .querySelectorAll<HTMLElement>(".towelie-comment-trigger")
+        .forEach((trigger) => trigger.remove());
+
+      const lineCells = Array.from(
+        row.querySelectorAll<HTMLElement>(
+          "td.d2h-code-side-linenumber, td.d2h-code-linenumber",
+        ),
+      );
+
+      lineCells.forEach((lineCell) => {
+        const lineNumber = Number(lineCell.textContent?.trim());
+        if (Number.isNaN(lineNumber) || lineNumber <= 0) return;
+
+        const context = this.buildContextFromCell(lineCell, row);
+        if (!context) return;
+
+        row.classList.add("towelie-diff-row");
+        lineCell.classList.add("towelie-commentable-number");
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "towelie-comment-trigger";
+        button.title = "Toggle comment panel";
+        button.dataset.fileName = context.location.fileName;
+        button.dataset.diffSide = context.location.diffSide;
+        button.dataset.line = String(context.location.lineNumber);
+        button.innerHTML =
+          '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>';
+
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.togglePanelForRow(row, context.location);
+        });
+
+        lineCell.appendChild(button);
+      });
+    });
+  }
+
+  private renderComments() {
+    const branch = this.currentStorageBranch();
+    const comments = this.storage.forBranch(branch);
+
+    this.commentCountTarget.textContent = `${comments.length} notes`;
+    this.closePanel();
+
+    this.outputTarget
+      .querySelectorAll<HTMLTableRowElement>(".d2h-diff-tbody tr")
+      .forEach((row) => {
+        row.classList.remove(
+          "has-comment",
+          "towelie-comment-range",
+          "towelie-comment-anchor",
+        );
+        row
+          .querySelectorAll<HTMLElement>(".towelie-comment-trigger")
+          .forEach((button) => button.classList.remove("has-comment"));
+      });
+
+    const commentsByFile = new Map<string, CommentRecord[]>();
+    comments.forEach((comment) => {
+      if (!commentsByFile.has(comment.selection.fileName)) {
+        commentsByFile.set(comment.selection.fileName, []);
+      }
+      commentsByFile.get(comment.selection.fileName)?.push(comment);
+    });
+
+    this.fileEntries.forEach((entry) => {
+      const button = this.fileButtons.get(entry.anchorId);
+      if (!button) return;
+      const dot = button.querySelector(".towelie-tree-comment-dot");
+      if (!dot) return;
+      dot.classList.toggle("hidden", !commentsByFile.has(entry.fileName));
+    });
+
+    comments.forEach((comment) => {
+      const rows = this.findRowsForSelection(comment.selection);
+      rows.forEach((row) => row.classList.add("towelie-comment-range"));
+
+      const anchorRow = rows[0];
+      if (!anchorRow) return;
+      anchorRow.classList.add("has-comment", "towelie-comment-anchor");
+
+      const triggers = Array.from(
+        anchorRow.querySelectorAll<HTMLElement>(
+          `.towelie-comment-trigger[data-file-name="${CSS.escape(comment.selection.fileName)}"][data-diff-side="${comment.selection.diffSide}"]`,
+        ),
+      );
+      const anchorTrigger =
+        triggers.find(
+          (trigger) =>
+            Number(trigger.dataset.line) === comment.selection.startLine,
+        ) ??
+        triggers.find((trigger) => {
+          const line = Number(trigger.dataset.line);
+          return (
+            !Number.isNaN(line) &&
+            line >= comment.selection.startLine &&
+            line <= comment.selection.endLine
+          );
+        });
+      anchorTrigger?.classList.add("has-comment");
+    });
+
+    this.updateActiveFileFromScroll();
+  }
+
+  private findRowsForSelection(selection: Selection): HTMLTableRowElement[] {
+    const rows: HTMLTableRowElement[] = [];
+    const wrapper = this.outputTarget.querySelector<HTMLElement>(
+      `.d2h-file-wrapper[data-file-name="${CSS.escape(selection.fileName)}"]`,
+    );
+    if (!wrapper) return rows;
+
+    wrapper
+      .querySelectorAll<HTMLTableRowElement>(".d2h-diff-tbody tr")
+      .forEach((row) => {
+        const buttons = row.querySelectorAll<HTMLButtonElement>(
+          `.towelie-comment-trigger[data-file-name="${CSS.escape(selection.fileName)}"][data-diff-side="${selection.diffSide}"]`,
+        );
+        buttons.forEach((button) => {
+          const line = Number(button.dataset.line);
+          if (
+            !Number.isNaN(line) &&
+            line >= selection.startLine &&
+            line <= selection.endLine
+          ) {
+            rows.push(row);
+          }
+        });
+      });
+
+    return rows;
+  }
+
+  private togglePanelForRow(row: HTMLTableRowElement, location: LineLocation) {
+    const key = `${location.fileName}:${location.diffSide}:${location.lineNumber}`;
+    if (this.openPanelKey === key) {
+      this.closePanel();
+      return;
+    }
+
+    const comments = this.commentsForLocation(location);
+    if (comments.length > 0) {
+      this.openSavedPanel(row, location, comments);
+      return;
+    }
+
+    this.openDraftPanel(row, {
+      fileName: location.fileName,
+      diffSide: location.diffSide,
+      startLine: location.lineNumber,
+      endLine: location.lineNumber,
+    });
+  }
+
+  private openSavedPanel(
+    diffRow: HTMLTableRowElement,
+    location: LineLocation,
+    comments: CommentRecord[],
+  ) {
+    this.closePanel();
+
+    const panelRow = this.createPanelRow(diffRow, location);
+    const panelBody = panelRow.querySelector<HTMLElement>(
+      ".towelie-comment-panel-body",
+    );
+    if (!panelBody) return;
+
+    comments.forEach((comment) => {
+      const lineLabel =
+        comment.selection.startLine === comment.selection.endLine
+          ? `${comment.selection.startLine}`
+          : `${comment.selection.startLine}-${comment.selection.endLine}`;
+
+      const block = document.createElement("article");
+      block.className = "towelie-comment-block";
+      block.innerHTML = `
+        <p class="towelie-comment-text"></p>
+        <div class="towelie-comment-meta">${comment.author} · lines ${lineLabel}</div>
+      `;
+      const textNode = block.querySelector<HTMLElement>(
+        ".towelie-comment-text",
+      );
+      if (textNode) textNode.textContent = comment.text;
+
+      const actions = document.createElement("div");
+      actions.className = "towelie-comment-actions";
+
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "towelie-comment-action";
+      editBtn.textContent = "Edit";
+      editBtn.addEventListener("click", () => {
+        const editor = document.createElement("div");
+        editor.className = "towelie-comment-editor";
+
+        const textarea = document.createElement("textarea");
+        textarea.rows = 3;
+        textarea.className = "towelie-comment-textarea";
+        textarea.value = comment.text;
+
+        const saveBtn = document.createElement("button");
+        saveBtn.type = "button";
+        saveBtn.className = "towelie-comment-save";
+        saveBtn.textContent = "Save";
+
+        const cancelBtn = document.createElement("button");
+        cancelBtn.type = "button";
+        cancelBtn.className = "towelie-comment-cancel";
+        cancelBtn.textContent = "Cancel";
+
+        saveBtn.addEventListener("click", () => {
+          const next = textarea.value.trim();
+          if (!next) return;
+          this.storage.update(comment.id, next);
+          this.renderComments();
+          this.openSavedPanel(
+            diffRow,
+            location,
+            this.commentsForLocation(location),
+          );
+        });
+
+        cancelBtn.addEventListener("click", () => {
+          this.openSavedPanel(
+            diffRow,
+            location,
+            this.commentsForLocation(location),
+          );
+        });
+
+        const controls = document.createElement("div");
+        controls.className = "towelie-comment-editor-controls";
+        controls.append(saveBtn, cancelBtn);
+
+        editor.append(textarea, controls);
+        block.replaceChildren(editor);
+      });
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "towelie-comment-action towelie-comment-delete";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", () => {
+        this.storage.remove(comment.id);
+        this.renderComments();
+      });
+
+      actions.append(editBtn, deleteBtn);
+      block.appendChild(actions);
+      panelBody.appendChild(block);
+    });
+
+    this.openPanelRow = panelRow;
+    this.openPanelKey = `${location.fileName}:${location.diffSide}:${location.lineNumber}`;
+    panelRow.classList.add("open");
+  }
+
+  private openDraftPanel(row: HTMLTableRowElement, selection: Selection) {
+    this.closePanel();
+    const location: LineLocation = {
+      fileName: selection.fileName,
+      diffSide: selection.diffSide,
+      lineNumber: selection.startLine,
+    };
+    const panelRow = this.createPanelRow(row, location);
+    const panelBody = panelRow.querySelector<HTMLElement>(
+      ".towelie-comment-panel-body",
+    );
+    if (!panelBody) return;
+
+    const editor = document.createElement("div");
+    editor.className = "towelie-comment-editor";
+
+    const label =
+      selection.startLine === selection.endLine
+        ? `${selection.fileName} · line ${selection.startLine}`
+        : `${selection.fileName} · lines ${selection.startLine}-${selection.endLine}`;
+    const caption = document.createElement("div");
+    caption.className = "towelie-comment-meta";
+    caption.textContent = label;
+
+    const textarea = document.createElement("textarea");
+    textarea.rows = 3;
+    textarea.className = "towelie-comment-textarea";
+    textarea.placeholder = "Write a comment...";
+
+    const controls = document.createElement("div");
+    controls.className = "towelie-comment-editor-controls";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "towelie-comment-save";
+    saveBtn.textContent = "Save";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "towelie-comment-cancel";
+    cancelBtn.textContent = "Cancel";
+
+    saveBtn.addEventListener("click", () => {
+      const text = textarea.value.trim();
+      if (!text) return;
+      this.storage.add(selection, text, this.currentStorageBranch());
+      this.renderComments();
+    });
+
+    cancelBtn.addEventListener("click", () => {
+      this.closePanel();
+      this.clearSelectionHighlight();
+    });
+
+    controls.append(saveBtn, cancelBtn);
+    editor.append(caption, textarea, controls);
+    panelBody.appendChild(editor);
+
+    this.openPanelRow = panelRow;
+    this.openPanelKey = `${selection.fileName}:${selection.diffSide}:${selection.startLine}`;
+    panelRow.classList.add("open");
+    textarea.focus();
+  }
+
+  private createPanelRow(
+    row: HTMLTableRowElement,
+    location: LineLocation,
+  ): HTMLTableRowElement {
+    const panelRow = document.createElement("tr");
+    panelRow.className = "towelie-comment-panel-row";
+    panelRow.dataset.fileName = location.fileName;
+    panelRow.dataset.diffSide = location.diffSide;
+
+    const cell = document.createElement("td");
+    cell.colSpan = row.children.length;
+    cell.innerHTML =
+      '<div class="towelie-comment-panel"><div class="towelie-comment-panel-body"></div></div>';
+    panelRow.appendChild(cell);
+
+    row.insertAdjacentElement("afterend", panelRow);
+    return panelRow;
+  }
+
+  private closePanel() {
+    if (!this.openPanelRow) return;
+    this.openPanelRow.remove();
+    this.openPanelRow = null;
+    this.openPanelKey = "";
+  }
+
+  private commentsForLocation(location: LineLocation): CommentRecord[] {
+    return this.storage
+      .forBranch(this.currentStorageBranch())
+      .filter((comment) => {
+        const selection = comment.selection;
+        return (
+          selection.fileName === location.fileName &&
+          selection.diffSide === location.diffSide &&
+          location.lineNumber >= selection.startLine &&
+          location.lineNumber <= selection.endLine
+        );
+      });
+  }
+
+  private currentStorageBranch(): string {
+    return this.branchSelectTarget.value || "current";
+  }
+
+  private scrollToFile(anchorId: string) {
+    const wrapper = this.outputTarget.querySelector<HTMLElement>(
+      `#${CSS.escape(anchorId)}`,
+    );
+    if (!wrapper) return;
+
+    const containerRect = this.mainScrollTarget.getBoundingClientRect();
+    const targetRect = wrapper.getBoundingClientRect();
+    const top =
+      this.mainScrollTarget.scrollTop + targetRect.top - containerRect.top - 20;
+
+    this.mainScrollTarget.scrollTo({ top, behavior: "smooth" });
+    this.setActiveFile(anchorId);
+  }
+
+  private setActiveFile(anchorId: string) {
+    if (this.activeFileId === anchorId) return;
+    this.activeFileId = anchorId;
+    this.fileButtons.forEach((button, id) => {
+      button.classList.toggle("active", id === anchorId);
+    });
+  }
+
+  private updateActiveFileFromScroll() {
+    if (this.fileEntries.length === 0) {
+      this.setActiveFile("");
+      return;
+    }
+
+    const rect = this.mainScrollTarget.getBoundingClientRect();
+    const marker = this.mainScrollTarget.scrollTop + 120;
+
+    let candidate = this.fileEntries[0];
+    this.fileEntries.forEach((entry) => {
+      const top =
+        this.mainScrollTarget.scrollTop +
+        entry.wrapper.getBoundingClientRect().top -
+        rect.top;
+      if (top <= marker) candidate = entry;
+    });
+
+    this.setActiveFile(candidate.anchorId);
+  }
+
+  private clearSelectionClasses() {
     this.selectionState.rows.forEach((row) => {
       row.classList.remove("towelie-comment-range", "towelie-comment-anchor");
     });
     this.selectionState.rows.clear();
   }
 
-  private selectionFromLocation(location: LineLocation): Selection {
+  private clearSelectionHighlight() {
+    this.clearSelectionClasses();
+    this.resetSelectionState();
+  }
+
+  private resetSelectionState() {
+    this.selectionState.start = null;
+    this.selectionState.end = null;
+    this.selectionState.selecting = false;
+    this.selectionState.dragMoved = false;
+    this.selectionState.usedAnchor = false;
+  }
+
+  private updateSelectionHighlight() {
+    this.clearSelectionClasses();
+    const selection = this.currentSelection();
+    if (!selection) return;
+
+    this.findRowsForSelection(selection).forEach((row, index) => {
+      row.classList.add("towelie-comment-range");
+      if (index === 0) row.classList.add("towelie-comment-anchor");
+      this.selectionState.rows.add(row);
+    });
+  }
+
+  private currentSelection(): Selection | null {
+    if (!this.selectionState.start || !this.selectionState.end) return null;
+    if (
+      this.selectionState.start.fileName !== this.selectionState.end.fileName ||
+      this.selectionState.start.diffSide !== this.selectionState.end.diffSide
+    ) {
+      return null;
+    }
+
+    const startLine = Math.min(
+      this.selectionState.start.lineNumber,
+      this.selectionState.end.lineNumber,
+    );
+    const endLine = Math.max(
+      this.selectionState.start.lineNumber,
+      this.selectionState.end.lineNumber,
+    );
+
     return {
-      fileName: location.fileName,
-      startLine: location.lineNumber,
-      endLine: location.lineNumber,
-      diffSide: location.diffSide,
+      fileName: this.selectionState.start.fileName,
+      diffSide: this.selectionState.start.diffSide,
+      startLine,
+      endLine,
     };
   }
 
-  private matchesSelectionLocation(
-    selection: Selection,
-    location: LineLocation,
-  ): boolean {
-    return (
-      selection.fileName === location.fileName &&
-      selection.diffSide === location.diffSide
-    );
-  }
+  private buildContextFromCell(
+    lineCell: HTMLElement,
+    row: HTMLTableRowElement,
+  ): LineContext | null {
+    const lineNumber = Number(lineCell.textContent?.trim());
+    if (Number.isNaN(lineNumber) || lineNumber <= 0) return null;
 
-  // Highlights selected line range in the diff view with colored backgrounds
-  private updateSelectionHighlight() {
-    if (!this.selectionState.start) return;
-    const normalized = this.normalizeSelection(this.selectionState.start);
-    this.clearSelectionHighlight();
+    const wrapper = lineCell.closest<HTMLElement>(".d2h-file-wrapper");
+    const fileName = wrapper?.dataset.fileName;
+    if (!fileName) return null;
 
-    const wrappers = Array.from(
-      this.outputTarget.querySelectorAll(".d2h-file-wrapper"),
-    );
-    const wrapper = wrappers.find((item) => {
-      const nameEl = item.querySelector(".d2h-file-name");
-      return nameEl?.textContent?.trim() === normalized.fileName;
-    });
-    if (!wrapper) return;
-
-    const filesDiv = wrapper.querySelector(".d2h-files-diff");
-    if (!filesDiv) return;
-
-    const sides = Array.from(
-      filesDiv.querySelectorAll(":scope > .d2h-file-side-diff"),
-    );
-    const sideContainer =
-      normalized.diffSide === DiffSide.Old ? sides[0] : sides[1];
-    if (!sideContainer) return;
-
-    const lineNumberEls = Array.from(
-      sideContainer.querySelectorAll(".d2h-code-side-linenumber"),
-    );
-    // Find all rows within the selected line range and apply highlight classes
-    for (const lineEl of lineNumberEls) {
-      const num = Number((lineEl as HTMLElement).textContent);
-      if (
-        isNaN(num) ||
-        num < normalized.startLine ||
-        num > normalized.endLine
-      ) {
-        continue;
-      }
-
-      const row = (lineEl as HTMLElement).closest("tr") as HTMLElement | null;
-      if (!row) continue;
-
-      row.classList.add("towelie-comment-range");
-      if (num === normalized.startLine) {
-        row.classList.add("towelie-comment-anchor");
-      }
-      this.selectionState.rows.add(row);
-    }
-  }
-
-  private getLineContext(target: EventTarget | null): LineContext | null {
-    if (!(target instanceof HTMLElement)) return null;
-
-    const lineCell =
-      (target.closest("td.d2h-code-side-linenumber") as HTMLElement | null) ||
-      (target.closest("td.d2h-code-side-line")
-        ?.previousElementSibling as HTMLElement | null);
-    if (!lineCell) return null;
-
-    const lineNumber = Number(lineCell.textContent);
-    if (isNaN(lineNumber)) return null;
-
-    const row = lineCell.closest("tr") as HTMLElement | null;
-    if (!row) return null;
-
-    const fileDiffContainer = lineCell.closest(".d2h-file-wrapper");
-    const fileName =
-      fileDiffContainer?.querySelector(".d2h-file-name")?.textContent?.trim() ||
-      "unknown";
-
-    const filesDiv = lineCell.closest(".d2h-files-diff");
+    const sideContainer = lineCell.closest(".d2h-file-side-diff");
     let diffSide = DiffSide.New;
-    if (filesDiv) {
+
+    const filesDiff = lineCell.closest(".d2h-files-diff");
+    if (filesDiff && sideContainer) {
       const sides = Array.from(
-        filesDiv.querySelectorAll(":scope > .d2h-file-side-diff"),
+        filesDiff.querySelectorAll(":scope > .d2h-file-side-diff"),
       );
-      const sideDiv = lineCell.closest(".d2h-file-side-diff");
-      if (sideDiv === sides[0]) diffSide = DiffSide.Old;
+      if (sides[0] === sideContainer) {
+        diffSide = DiffSide.Old;
+      } else if (sides.length > 1) {
+        diffSide = DiffSide.New;
+      }
+    } else if (
+      lineCell.classList.contains("d2h-old") ||
+      row.classList.contains("d2h-del")
+    ) {
+      diffSide = DiffSide.Old;
     }
 
     return {
@@ -770,92 +1107,99 @@ export default class ReviewController extends Controller {
     };
   }
 
-  private HighlightSelectedLine = (e: MouseEvent) => {
-    const context = this.getLineContext(e.target);
+  private getLineContext(target: EventTarget | null): LineContext | null {
+    if (!(target instanceof HTMLElement)) return null;
+
+    const lineCell =
+      (target.closest("td.d2h-code-side-linenumber") as HTMLElement | null) ||
+      (target.closest("td.d2h-code-linenumber") as HTMLElement | null) ||
+      (target.closest("td.d2h-code-side-line")
+        ?.previousElementSibling as HTMLElement | null) ||
+      (target.closest("td.d2h-code-line")
+        ?.previousElementSibling as HTMLElement | null);
+    if (!lineCell) return null;
+
+    const row = lineCell.closest("tr");
+    if (!(row instanceof HTMLTableRowElement)) return null;
+    return this.buildContextFromCell(lineCell, row);
+  }
+
+  private onMouseDown = (event: MouseEvent) => {
+    const context = this.getLineContext(event.target);
     if (!context) return;
 
-    e.preventDefault();
-
-    if (this.activeForm) {
-      this.activeForm.remove();
-      this.activeForm = null;
-    }
-
-    const { location, row } = context;
-
-    if (
-      !this.selectionState.start ||
-      !this.matchesSelectionLocation(this.selectionState.start, location)
-    ) {
-      this.selectionState.start = this.selectionFromLocation(location);
-      this.selectionState.hadStart = false;
-    } else {
-      this.selectionState.start.endLine = location.lineNumber;
-      this.selectionState.hadStart = true;
-    }
-
-    this.selectionState.selecting = true;
-    this.selectionState.didDrag = false;
-
-    this.selectionState.row = row;
-    this.updateSelectionHighlight();
-  };
-
-  private highlightLineNumber = (e: MouseEvent) => {
-    if (!this.selectionState.selecting || !this.selectionState.start) return;
-    const context = this.getLineContext(e.target);
-    if (!context) return;
-
-    const { location, row } = context;
-    if (!this.matchesSelectionLocation(this.selectionState.start, location)) {
+    if ((event.target as HTMLElement).closest(".towelie-comment-trigger")) {
       return;
     }
 
-    if (this.selectionState.start.endLine !== location.lineNumber) {
-      this.selectionState.start.endLine = location.lineNumber;
-      this.selectionState.row = row;
-      this.selectionState.didDrag =
-        this.selectionState.start.startLine !==
-        this.selectionState.start.endLine;
-      this.updateSelectionHighlight();
+    const hasAnchor =
+      Boolean(this.selectionState.start) &&
+      !this.selectionState.selecting &&
+      this.selectionState.start?.fileName === context.location.fileName &&
+      this.selectionState.start?.diffSide === context.location.diffSide;
+
+    this.closePanel();
+    if (!hasAnchor) {
+      this.selectionState.start = context.location;
     }
+    this.selectionState.end = context.location;
+    this.selectionState.selecting = true;
+    this.selectionState.dragMoved = false;
+    this.selectionState.usedAnchor = hasAnchor;
+    this.updateSelectionHighlight();
   };
 
-  private ConfirmCommentSelection = () => {
+  private onMouseMove = (event: MouseEvent) => {
+    if (!this.selectionState.selecting || !this.selectionState.start) return;
+    const context = this.getLineContext(event.target);
+    if (!context) return;
+
+    if (
+      context.location.fileName !== this.selectionState.start.fileName ||
+      context.location.diffSide !== this.selectionState.start.diffSide
+    ) {
+      return;
+    }
+
+    this.selectionState.end = context.location;
+    this.selectionState.dragMoved =
+      this.selectionState.dragMoved ||
+      this.selectionState.start.lineNumber !== context.location.lineNumber;
+    this.updateSelectionHighlight();
+  };
+
+  private onMouseUp = () => {
     if (!this.selectionState.selecting) return;
     this.selectionState.selecting = false;
 
-    if (!this.selectionState.start || !this.selectionState.row) {
-      this.selectionState.start = null;
+    const selection = this.currentSelection();
+    if (!selection) {
       this.clearSelectionHighlight();
       return;
     }
 
-    const shouldCommit =
-      this.selectionState.didDrag || this.selectionState.hadStart;
-    const normalized = this.normalizeSelection(this.selectionState.start);
-    this.selectionState.hadStart = false;
-    this.selectionState.didDrag = false;
-
-    if (!shouldCommit) {
+    if (!this.selectionState.dragMoved && !this.selectionState.usedAnchor) {
+      this.selectionState.start = this.selectionState.end;
       this.updateSelectionHighlight();
       return;
     }
 
-    this.selectionState.start = null;
+    const row = this.findRowsForSelection(selection)[0];
+    if (!row) {
+      this.clearSelectionHighlight();
+      return;
+    }
 
-    this.activeForm = showInlineCommentForm(
-      this.selectionState.row,
-      normalized,
-      (selection, text) => {
-        const branch = this.branchSelectTarget.value || "current";
-        this.storage.add(selection, text, branch);
-        this.activeForm = null;
-        this.decorateLineNumbersAndRenderComments();
-      },
-      () => {
-        this.clearSelectionHighlight();
-      },
-    );
+    this.openDraftPanel(row, selection);
+    this.resetSelectionState();
+  };
+
+  private onMainScroll = () => {
+    if (this.scrollTicking) return;
+    this.scrollTicking = true;
+    window.requestAnimationFrame(() => {
+      this.scrollTicking = false;
+      this.updateActiveFileFromScroll();
+    });
   };
 }

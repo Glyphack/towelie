@@ -6,4 +6,4 @@
 
 The frontend code is in `./web` directory.
 The backend serves html templates and have stimulus to manage javascript.
-Do not edit `src/towelie/static/output.css` directly; edit `src/towelie/static/input.css` and run `bun run build`.
+Do not edit auto generated files. Instead edit source files and run `bun run build` or `uv build`.

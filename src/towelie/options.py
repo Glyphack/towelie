@@ -7,7 +7,12 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
 
-DEFAULT_PROMPT_TEMPLATE = "Here's the review of the user:\n\n{{comments}}"
+DEFAULT_PROMPT_TEMPLATE = (
+    "You are reviewing a code change.\n\n"
+    "{{review_scope}}\n"
+    "Total comments: {{comment_count}}\n\n"
+    "{{comments}}"
+)
 
 
 class DiffStyle(StrEnum):
@@ -15,8 +20,14 @@ class DiffStyle(StrEnum):
     TWO_SIDES = "two_sides"
 
 
+class CommentOutputMode(StrEnum):
+    LINE_NUMBERS = "line_numbers"
+    SELECTED_LINES = "selected_lines"
+
+
 class PromptOptions(BaseModel):
     template: str = DEFAULT_PROMPT_TEMPLATE
+    comment_output_mode: CommentOutputMode = CommentOutputMode.LINE_NUMBERS
 
     @field_validator("template")
     @classmethod
@@ -45,11 +56,18 @@ class AppOptions(BaseModel):
             return defaults
 
         prompt_template = defaults.prompt.template
+        prompt_comment_output_mode = defaults.prompt.comment_output_mode
         prompt = data.get("prompt")
         if isinstance(prompt, dict):
             template = prompt.get("template")
             if isinstance(template, str) and template.strip():
                 prompt_template = template
+            comment_output_mode = prompt.get("comment_output_mode")
+            if comment_output_mode in {
+                CommentOutputMode.LINE_NUMBERS.value,
+                CommentOutputMode.SELECTED_LINES.value,
+            }:
+                prompt_comment_output_mode = CommentOutputMode(comment_output_mode)
 
         diff_style = defaults.diff.style
         diff = data.get("diff")
@@ -59,7 +77,10 @@ class AppOptions(BaseModel):
                 diff_style = DiffStyle(style)
 
         return cls(
-            prompt=PromptOptions(template=prompt_template),
+            prompt=PromptOptions(
+                template=prompt_template,
+                comment_output_mode=prompt_comment_output_mode,
+            ),
             diff=DiffOptions(style=diff_style),
         )
 

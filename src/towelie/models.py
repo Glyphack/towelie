@@ -2,7 +2,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator
 
-from towelie.options import DiffStyle
+from towelie.options import CommentOutputMode, DiffStyle
 
 
 class CheckStatus(StrEnum):
@@ -22,6 +22,7 @@ class DiffResponse(BaseModel):
 
 class PromptOptionsPayload(BaseModel):
     template: str = Field(min_length=1)
+    comment_output_mode: CommentOutputMode = CommentOutputMode.LINE_NUMBERS
 
     @field_validator("template")
     @classmethod
@@ -63,6 +64,7 @@ class Branch(BaseModel):
 
 class ProjectInfoResponse(BaseModel):
     project_name: str
+    origin: str
     current_branch: str
     base_branch: str
     branches: list[Branch]

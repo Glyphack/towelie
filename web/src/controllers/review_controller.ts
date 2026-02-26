@@ -1,6 +1,7 @@
 import { Controller } from "@hotwired/stimulus";
 import { Diff2HtmlUI } from "diff2html/lib/ui/js/diff2html-ui-slim.js";
 import { getDiff, getInfo, getOptions } from "../api";
+import { type CommentOutputMode } from "../options";
 
 enum DiffSide {
   Old = "old",
@@ -60,9 +61,32 @@ interface FileTreeNode {
   files: FileEntry[];
 }
 
+interface PromptTemplateValues {
+  comments: string;
+  branch: string;
+  comment_count: string;
+  commit_ref: string;
+  commit_sha: string;
+  review_scope: string;
+}
+
+interface ParsedDiffHunk {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  lines: string[];
+  fileCandidates: string[];
+}
+
+const ALL_CHANGES = "__all__";
+const STAGED = "__staged__";
+const UNSTAGED = "__unstaged__";
+const UNCOMMITTED = "__uncommitted__";
+
 function applyPromptTemplate(
   template: string,
-  values: { comments: string; branch: string; comment_count: string },
+  values: PromptTemplateValues,
 ): string {
   return template
     .split("{{comments}}")
@@ -70,7 +94,228 @@ function applyPromptTemplate(
     .split("{{branch}}")
     .join(values.branch)
     .split("{{comment_count}}")
-    .join(values.comment_count);
+    .join(values.comment_count)
+    .split("{{commit_ref}}")
+    .join(values.commit_ref)
+    .split("{{commit_sha}}")
+    .join(values.commit_sha)
+    .split("{{review_scope}}")
+    .join(values.review_scope);
+}
+
+function normalizeDiffPath(value: string): string {
+  if (value === "/dev/null") return "";
+  if (value.startsWith("a/") || value.startsWith("b/")) {
+    return value.slice(2);
+  }
+  return value;
+}
+
+function buildFileCandidates(oldPath: string, newPath: string): string[] {
+  const candidates = new Set<string>();
+  if (newPath) candidates.add(newPath);
+  if (oldPath) candidates.add(oldPath);
+  if (oldPath && newPath && oldPath !== newPath) {
+    candidates.add(`${oldPath} -> ${newPath}`);
+  }
+  return Array.from(candidates);
+}
+
+function parseUnifiedDiffHunks(diffText: string): ParsedDiffHunk[] {
+  const hunks: ParsedDiffHunk[] = [];
+  const lines = diffText.split("\n");
+
+  let oldPath = "";
+  let newPath = "";
+  let currentHunk: ParsedDiffHunk | null = null;
+
+  const flushHunk = () => {
+    if (!currentHunk) return;
+    hunks.push(currentHunk);
+    currentHunk = null;
+  };
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      flushHunk();
+      const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+      oldPath = match?.[1] ?? "";
+      newPath = match?.[2] ?? "";
+      continue;
+    }
+
+    if (line.startsWith("rename from ")) {
+      oldPath = line.slice(12).trim();
+      continue;
+    }
+
+    if (line.startsWith("rename to ")) {
+      newPath = line.slice(10).trim();
+      continue;
+    }
+
+    if (line.startsWith("--- ")) {
+      const parsed = normalizeDiffPath(line.slice(4).trim());
+      if (parsed) oldPath = parsed;
+      continue;
+    }
+
+    if (line.startsWith("+++ ")) {
+      const parsed = normalizeDiffPath(line.slice(4).trim());
+      if (parsed) newPath = parsed;
+      continue;
+    }
+
+    if (line.startsWith("@@ ")) {
+      flushHunk();
+      const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+      if (!match) continue;
+
+      currentHunk = {
+        oldStart: Number(match[1]),
+        oldCount: Number(match[2] ?? "1"),
+        newStart: Number(match[3]),
+        newCount: Number(match[4] ?? "1"),
+        lines: [line],
+        fileCandidates: buildFileCandidates(oldPath, newPath),
+      };
+      continue;
+    }
+
+    if (currentHunk) {
+      currentHunk.lines.push(line);
+    }
+  }
+
+  flushHunk();
+  return hunks;
+}
+
+function matchesFileName(selectionFile: string, candidates: string[]): boolean {
+  if (candidates.includes(selectionFile)) return true;
+
+  if (selectionFile.includes(" -> ")) {
+    const parts = selectionFile.split(" -> ").map((part) => part.trim());
+    if (parts.every((part) => candidates.includes(part))) return true;
+  }
+
+  return candidates.some(
+    (candidate) =>
+      candidate.endsWith(selectionFile) || selectionFile.endsWith(candidate),
+  );
+}
+
+function hunkMatchesSelection(
+  selection: Selection,
+  hunk: ParsedDiffHunk,
+): boolean {
+  if (!matchesFileName(selection.fileName, hunk.fileCandidates)) {
+    return false;
+  }
+
+  const start =
+    selection.diffSide === DiffSide.Old ? hunk.oldStart : hunk.newStart;
+  const count =
+    selection.diffSide === DiffSide.Old ? hunk.oldCount : hunk.newCount;
+  if (count <= 0) return false;
+  const end = start + count - 1;
+
+  return selection.startLine <= end && selection.endLine >= start;
+}
+
+function formatLineNumberComment(comment: CommentRecord): string {
+  const selection = comment.selection;
+  const sideLabel =
+    selection.diffSide === DiffSide.Old
+      ? "old code (before the change)"
+      : "new code (after the change)";
+  const lineLabel =
+    selection.startLine === selection.endLine
+      ? `${selection.startLine}`
+      : `${selection.startLine}-${selection.endLine}`;
+  return `${selection.fileName} lines ${lineLabel} on the ${sideLabel}\n\n\`\`\`\n${comment.text}\n\`\`\``;
+}
+
+function formatSelectedLinesComment(
+  comment: CommentRecord,
+  hunks: ParsedDiffHunk[],
+): string {
+  const matchingHunks = hunks.filter((hunk) =>
+    hunkMatchesSelection(comment.selection, hunk),
+  );
+  if (matchingHunks.length === 0) {
+    return formatLineNumberComment(comment);
+  }
+
+  const base = formatLineNumberComment(comment).split("\n\n```")[0] ?? "";
+  const selectedLines: string[] = [];
+
+  for (const hunk of matchingHunks) {
+    let oldLine = hunk.oldStart;
+    let newLine = hunk.newStart;
+
+    for (const line of hunk.lines) {
+      if (line.startsWith("@@ ")) continue;
+      if (line.startsWith("\\")) continue;
+
+      const marker = line[0] ?? "";
+      const includeOld = marker !== "+";
+      const includeNew = marker !== "-";
+
+      if (includeOld) {
+        const isInRange =
+          comment.selection.diffSide === DiffSide.Old &&
+          oldLine >= comment.selection.startLine &&
+          oldLine <= comment.selection.endLine;
+        if (isInRange) selectedLines.push(line);
+        oldLine += 1;
+      }
+
+      if (includeNew) {
+        const isInRange =
+          comment.selection.diffSide === DiffSide.New &&
+          newLine >= comment.selection.startLine &&
+          newLine <= comment.selection.endLine;
+        if (isInRange) selectedLines.push(line);
+        newLine += 1;
+      }
+    }
+  }
+
+  if (selectedLines.length === 0) {
+    return formatLineNumberComment(comment);
+  }
+
+  return `${base}\n\n\`\`\`diff\n${selectedLines.join("\n")}\n\`\`\`\n\n\`\`\`\n${comment.text}\n\`\`\``;
+}
+
+function formatCommentBlock(
+  comment: CommentRecord,
+  mode: CommentOutputMode,
+  hunks: ParsedDiffHunk[],
+): string {
+  if (mode === "selected_lines") {
+    return formatSelectedLinesComment(comment, hunks);
+  }
+  return formatLineNumberComment(comment);
+}
+
+function resolveCommitRef(commitValue: string): {
+  commitRef: string;
+  commitSha: string;
+} {
+  if (commitValue === STAGED)
+    return { commitRef: "staged changes", commitSha: "" };
+  if (commitValue === UNSTAGED) {
+    return { commitRef: "unstaged changes", commitSha: "" };
+  }
+  if (commitValue === UNCOMMITTED) {
+    return { commitRef: "uncommited changes", commitSha: "" };
+  }
+  if (!commitValue || commitValue === ALL_CHANGES) {
+    return { commitRef: "all changes", commitSha: "" };
+  }
+  return { commitRef: commitValue, commitSha: commitValue };
 }
 
 function flashButton(btn: HTMLButtonElement, message: string, ms: number) {
@@ -264,7 +509,9 @@ export default class ReviewController extends Controller {
   declare readonly submitNotesTarget: HTMLTextAreaElement;
 
   private storage = new CommentStorage();
+  private currentProjectOrigin = "repo";
   private currentBranchName = "current";
+  private currentDiffText = "";
   private sidebarVisible = true;
   private fileEntries: FileEntry[] = [];
   private fileButtons = new Map<string, HTMLButtonElement>();
@@ -297,6 +544,16 @@ export default class ReviewController extends Controller {
     this.mainScrollTarget.removeEventListener("scroll", this.onMainScroll);
   }
 
+  async refreshDiff(event: Event) {
+    const btn = event.currentTarget as HTMLButtonElement | null;
+    if (btn) btn.disabled = true;
+    try {
+      await this.reloadReview();
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   async reloadReview() {
     await this.populateInfo();
     this.closePanel();
@@ -312,6 +569,7 @@ export default class ReviewController extends Controller {
 
     const outputFormat =
       options.diff.style === "inline" ? "line-by-line" : "side-by-side";
+    this.currentDiffText = diff.diff.diff;
 
     this.outputTarget.innerHTML = "";
     const diff2htmlUi = new Diff2HtmlUI(this.outputTarget, diff.diff.diff, {
@@ -336,6 +594,7 @@ export default class ReviewController extends Controller {
 
   async populateInfo() {
     const info = await getInfo();
+    this.currentProjectOrigin = info.origin;
     this.currentBranchName = info.current_branch;
     const branchSelect = this.branchSelectTarget;
     const baseBranchSelect = this.baseBranchSelectTarget;
@@ -415,9 +674,10 @@ export default class ReviewController extends Controller {
   async finishReview(e: Event) {
     const btn = e.currentTarget as HTMLButtonElement;
     const selectedBranch = this.branchSelectTarget.value;
-    const storageBranch = selectedBranch || "current";
     const renderedBranch = selectedBranch || this.currentBranchName;
-    const branchComments = this.storage.forBranch(storageBranch);
+    const storageScope = this.currentStorageScope();
+    const selectedCommit = this.commitSelectTarget.value;
+    const branchComments = this.storage.forBranch(storageScope);
     const overallNotes = this.submitNotesTarget.value.trim();
 
     if (branchComments.length === 0 && !overallNotes) {
@@ -425,18 +685,15 @@ export default class ReviewController extends Controller {
       return;
     }
 
-    const blocks = branchComments.map((comment) => {
-      const selection = comment.selection;
-      const sideLabel =
-        selection.diffSide === DiffSide.Old
-          ? "old code (before the change)"
-          : "new code (after the change)";
-      const lineLabel =
-        selection.startLine === selection.endLine
-          ? `${selection.startLine}`
-          : `${selection.startLine}-${selection.endLine}`;
-      return `${selection.fileName} lines ${lineLabel} on the ${sideLabel}\n\n\`\`\`\n${comment.text}\n\`\`\``;
-    });
+    const options = await getOptions();
+    const outputMode = options.prompt.comment_output_mode;
+    const parsedHunks =
+      outputMode === "selected_lines"
+        ? parseUnifiedDiffHunks(this.currentDiffText)
+        : [];
+    const blocks = branchComments.map((comment) =>
+      formatCommentBlock(comment, outputMode, parsedHunks),
+    );
 
     let commentsBlock = blocks.join("\n\n---\n\n");
     if (overallNotes) {
@@ -445,11 +702,19 @@ export default class ReviewController extends Controller {
         : `Overall notes:\n${overallNotes}`;
     }
 
-    const template = (await getOptions()).prompt.template;
+    const { commitRef, commitSha } = resolveCommitRef(selectedCommit);
+    const reviewScope = commitSha
+      ? `This is a review on branch ${renderedBranch} with commit ${commitSha}.`
+      : `This is a review on branch ${renderedBranch} with ${commitRef}.`;
+
+    const template = options.prompt.template;
     let reviewText = applyPromptTemplate(template, {
       comments: commentsBlock,
       branch: renderedBranch,
       comment_count: String(branchComments.length),
+      commit_ref: commitRef,
+      commit_sha: commitSha,
+      review_scope: reviewScope,
     });
 
     if (!template.includes("{{comments}}")) {
@@ -458,7 +723,7 @@ export default class ReviewController extends Controller {
     }
 
     await navigator.clipboard.writeText(reviewText);
-    this.storage.clearBranch(storageBranch);
+    this.storage.clearBranch(storageScope);
     this.renderComments();
     flashButton(btn, "Copied to clipboard!", 2000);
   }
@@ -495,7 +760,7 @@ export default class ReviewController extends Controller {
     this.fileButtons.clear();
     this.fileExplorerTarget.innerHTML = "";
 
-    const comments = this.storage.forBranch(this.currentStorageBranch());
+    const comments = this.storage.forBranch(this.currentStorageScope());
     const commentedFiles = new Set(
       comments.map((comment) => comment.selection.fileName),
     );
@@ -637,7 +902,7 @@ export default class ReviewController extends Controller {
   }
 
   private renderComments() {
-    const branch = this.currentStorageBranch();
+    const branch = this.currentStorageScope();
     const comments = this.storage.forBranch(branch);
 
     this.commentCountTarget.textContent = `${comments.length} notes`;
@@ -901,7 +1166,7 @@ export default class ReviewController extends Controller {
     saveBtn.addEventListener("click", () => {
       const text = textarea.value.trim();
       if (!text) return;
-      this.storage.add(selection, text, this.currentStorageBranch());
+      this.storage.add(selection, text, this.currentStorageScope());
       this.renderComments();
     });
 
@@ -948,7 +1213,7 @@ export default class ReviewController extends Controller {
 
   private commentsForLocation(location: LineLocation): CommentRecord[] {
     return this.storage
-      .forBranch(this.currentStorageBranch())
+      .forBranch(this.currentStorageScope())
       .filter((comment) => {
         const selection = comment.selection;
         return (
@@ -960,8 +1225,10 @@ export default class ReviewController extends Controller {
       });
   }
 
-  private currentStorageBranch(): string {
-    return this.branchSelectTarget.value || "current";
+  private currentStorageScope(): string {
+    const branch = this.branchSelectTarget.value || this.currentBranchName;
+    const commit = this.commitSelectTarget.value || ALL_CHANGES;
+    return `v2|${this.currentProjectOrigin}|${branch}|${commit}`;
   }
 
   private scrollToFile(anchorId: string) {
@@ -1124,7 +1391,7 @@ export default class ReviewController extends Controller {
     return this.buildContextFromCell(lineCell, row);
   }
 
-  private onMouseDown = (event: MouseEvent) => {
+  private onMouseDown(event: MouseEvent) {
     const context = this.getLineContext(event.target);
     if (!context) return;
 
@@ -1147,9 +1414,9 @@ export default class ReviewController extends Controller {
     this.selectionState.dragMoved = false;
     this.selectionState.usedAnchor = hasAnchor;
     this.updateSelectionHighlight();
-  };
+  }
 
-  private onMouseMove = (event: MouseEvent) => {
+  private onMouseMove(event: MouseEvent) {
     if (!this.selectionState.selecting || !this.selectionState.start) return;
     const context = this.getLineContext(event.target);
     if (!context) return;
@@ -1166,9 +1433,9 @@ export default class ReviewController extends Controller {
       this.selectionState.dragMoved ||
       this.selectionState.start.lineNumber !== context.location.lineNumber;
     this.updateSelectionHighlight();
-  };
+  }
 
-  private onMouseUp = () => {
+  private onMouseUp() {
     if (!this.selectionState.selecting) return;
     this.selectionState.selecting = false;
 
@@ -1192,14 +1459,14 @@ export default class ReviewController extends Controller {
 
     this.openDraftPanel(row, selection);
     this.resetSelectionState();
-  };
+  }
 
-  private onMainScroll = () => {
+  private onMainScroll() {
     if (this.scrollTicking) return;
     this.scrollTicking = true;
     window.requestAnimationFrame(() => {
       this.scrollTicking = false;
       this.updateActiveFileFromScroll();
     });
-  };
+  }
 }

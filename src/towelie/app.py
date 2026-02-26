@@ -20,7 +20,12 @@ from towelie.models import (
     ParsedCheck,
     ProjectInfoResponse,
 )
-from towelie.options import AppOptions, DiffOptions, OptionsStore, PromptOptions
+from towelie.options import (
+    AppOptions,
+    DiffOptions,
+    OptionsStore,
+    PromptOptions,
+)
 
 dev_mode = os.environ.get("TOWELIE_DEV") == "1"
 
@@ -87,6 +92,21 @@ class Project:
         )
         stdout, _ = await proc.communicate()
         return stdout.decode().strip()
+
+    async def get_origin(self) -> str:
+        _log_cmd(["git", "config", "--get", "remote.origin.url"])
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "config",
+            "--get",
+            "remote.origin.url",
+            cwd=self.git_root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        origin = stdout.decode().strip()
+        return origin or str(self.git_root.resolve())
 
     async def get_uncommitted_diff(self) -> Diff:
         _log_cmd(["git", "diff", "HEAD", "--unified=10"])
@@ -289,9 +309,9 @@ class Project:
         is_current = branch == await self.get_current_branch()
         commits: list[CommitInfo] = [CommitInfo(hash=ALL_CHANGES, label="All changes")]
         if is_current:
+            commits.append(CommitInfo(hash=UNCOMMITTED, label="Uncommited"))
             commits.append(CommitInfo(hash=STAGED, label="Staged changes"))
             commits.append(CommitInfo(hash=UNSTAGED, label="Unstaged changes"))
-            commits.append(CommitInfo(hash=UNCOMMITTED, label="Staged + unstaged"))
         _log_cmd(["git", "log", f"{base}..{branch}", "--pretty=format:%H%x00%s"])
         proc = await asyncio.create_subprocess_exec(
             "git",
@@ -464,6 +484,7 @@ async def get_info():
 
     return ProjectInfoResponse(
         project_name=APP_CONTEXT.project.git_root.name,
+        origin=await APP_CONTEXT.project.get_origin(),
         current_branch=await APP_CONTEXT.project.get_current_branch(),
         base_branch=base,
         branches=branches,
@@ -478,7 +499,10 @@ async def get_options() -> AppOptions:
 @app.put("/api/options")
 async def update_options(payload: AppOptionsPayload) -> AppOptions:
     options = AppOptions(
-        prompt=PromptOptions(template=payload.prompt.template),
+        prompt=PromptOptions(
+            template=payload.prompt.template,
+            comment_output_mode=payload.prompt.comment_output_mode,
+        ),
         diff=DiffOptions(style=payload.diff.style),
     )
     return APP_CONTEXT.options_store.save(options)

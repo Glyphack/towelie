@@ -34,6 +34,7 @@ export interface ChecksResponse {
 
 export interface ProjectInfo {
   project_name: string;
+  origin: string;
   current_branch: string;
   base_branch: string;
   branches: Branch[];
@@ -50,6 +51,7 @@ export async function getInfo(): Promise<ProjectInfo> {
   const data = await parseJson(await fetch("/api/info"));
   return {
     project_name: data.project_name,
+    origin: data.origin,
     current_branch: data.current_branch,
     base_branch: data.base_branch,
     branches: data.branches,

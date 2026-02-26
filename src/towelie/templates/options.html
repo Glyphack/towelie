@@ -23,7 +23,10 @@ options{% endblock %} {% block body %}
       <p class="text-xs text-[var(--color-text-dim)]">
         Available placeholders: <code>{% raw %}{{comments}}{% endraw %}</code>,
         <code>{% raw %}{{branch}}{% endraw %}</code>,
-        <code>{% raw %}{{comment_count}}{% endraw %}</code>.
+        <code>{% raw %}{{comment_count}}{% endraw %}</code>,
+        <code>{% raw %}{{commit_ref}}{% endraw %}</code>,
+        <code>{% raw %}{{commit_sha}}{% endraw %}</code>,
+        <code>{% raw %}{{review_scope}}{% endraw %}</code>.
       </p>
       <textarea
         id="prompt-template"
@@ -31,6 +34,22 @@ options{% endblock %} {% block body %}
         rows="8"
         class="towelie-input w-full px-3 py-2 text-sm"
       ></textarea>
+    </div>
+
+    <div class="flex flex-col gap-2">
+      <label
+        for="comment-output-mode"
+        class="text-[10px] font-medium tracking-[0.14em] text-[var(--color-text-faint)] uppercase"
+        >Copied comment format</label
+      >
+      <select
+        id="comment-output-mode"
+        data-options-target="commentOutputMode"
+        class="towelie-input towelie-select w-full px-3 py-2 text-sm"
+      >
+        <option value="line_numbers">Line numbers + comment</option>
+        <option value="selected_lines">Selected lines + comment</option>
+      </select>
     </div>
 
     <div class="flex flex-col gap-2">

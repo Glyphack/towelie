@@ -94,7 +94,16 @@ def main():
         action="store_true",
         help="Run in development mode with Bun and Tailwind watchers",
     )
+    parser.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Path to git repository (defaults to current directory)",
+    )
     args = parser.parse_args()
+
+    if args.path:
+        os.environ["TOWELIE_GIT_PATH"] = str(Path(args.path).resolve())
 
     if args.dev:
         dev()

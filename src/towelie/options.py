@@ -25,6 +25,11 @@ class CommentOutputMode(StrEnum):
     SELECTED_LINES = "selected_lines"
 
 
+class DiffSide(StrEnum):
+    OLD = "old"
+    NEW = "new"
+
+
 class PromptOptions(BaseModel):
     template: str = DEFAULT_PROMPT_TEMPLATE
     comment_output_mode: CommentOutputMode = CommentOutputMode.LINE_NUMBERS

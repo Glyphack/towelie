@@ -4,25 +4,37 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import sys
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from towelie.models import (
+    ALL_CHANGES,
+    STAGED,
+    UNCOMMITTED,
+    UNSTAGED,
     AppOptionsPayload,
     Branch,
     ChecksResponse,
     CheckStatus,
     CommitInfo,
+    CommitRef,
     Diff,
     DiffResponse,
+    IndexRef,
     ParsedCheck,
     ProjectInfoResponse,
+    ProjectRef,
+    WorktreeRef,
+    parse_project_ref,
+    resolve_git_ref,
 )
 from towelie.options import (
     AppOptions,
     DiffOptions,
+    DiffSide,
     OptionsStore,
     PromptOptions,
 )
@@ -43,12 +55,6 @@ def _log_cmd(cmd):
 class CheckCommand:
     command: str
     shell: bool = True
-
-
-ALL_CHANGES = "__all__"
-UNCOMMITTED = "__uncommitted__"
-STAGED = "__staged__"
-UNSTAGED = "__unstaged__"
 
 
 @dataclass
@@ -331,6 +337,30 @@ class Project:
             commits.append(CommitInfo(hash=full_hash, label=f"{short_hash} {subject}"))
         return commits
 
+    async def get_file_lines(
+        self,
+        git_ref: "WorktreeRef | IndexRef | CommitRef",
+        file: str,
+        start: int,
+        end: int,
+    ) -> str:
+        if isinstance(git_ref, WorktreeRef):
+            lines = (self.git_root / file).read_text().splitlines()
+            return "\n".join(lines[start - 1 : end])
+        show_arg = (
+            f":0:{file}" if isinstance(git_ref, IndexRef) else f"{git_ref.sha}:{file}"
+        )
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "show",
+            show_arg,
+            cwd=self.git_root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        return "\n".join(stdout.decode().splitlines()[start - 1 : end])
+
     async def run_checks(self) -> "CheckResult":
         if not self.check_command:
             msg = (
@@ -513,14 +543,13 @@ async def update_options(payload: AppOptionsPayload) -> AppOptions:
 
 @app.get("/api/diff")
 async def diff(
-    branch: str | None = None,
-    base: str | None = None,
-    commit: str | None = None,
+    project_ref: Annotated[ProjectRef, Depends(parse_project_ref)],
 ) -> DiffResponse:
     current_branch = await APP_CONTEXT.project.get_current_branch()
-    effective_branch = branch or current_branch
-    effective_base = base or await APP_CONTEXT.project.get_base_branch()
+    effective_branch = project_ref.branch or current_branch
+    effective_base = project_ref.base or await APP_CONTEXT.project.get_base_branch()
     is_current_branch = effective_branch == current_branch
+    commit = project_ref.commit
 
     if commit in (UNCOMMITTED, STAGED, UNSTAGED) and not is_current_branch:
         raise HTTPException(
@@ -540,8 +569,20 @@ async def diff(
     else:
         result = await APP_CONTEXT.project.get_commit_diff(commit)
 
-    response = DiffResponse(diff=result)
-    return response
+    return DiffResponse(diff=result)
+
+
+@app.get("/api/source")
+async def get_source(
+    project_ref: Annotated[ProjectRef, Depends(parse_project_ref)],
+    file: str,
+    start: int,
+    end: int,
+    side: DiffSide,
+) -> dict:
+    git_ref = resolve_git_ref(project_ref, side)
+    lines = await APP_CONTEXT.project.get_file_lines(git_ref, file, start, end)
+    return {"lines": lines}
 
 
 @app.get("/api/checks")

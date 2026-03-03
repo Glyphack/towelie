@@ -1,5 +1,6 @@
 export type DiffStyle = "inline" | "two_sides";
 export type CommentOutputMode = "line_numbers" | "selected_lines";
+export type DiffSide = "old" | "new";
 
 export interface AppOptions {
   prompt: {

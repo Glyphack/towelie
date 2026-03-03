@@ -1,12 +1,7 @@
 import { Controller } from "@hotwired/stimulus";
 import { Diff2HtmlUI } from "diff2html/lib/ui/js/diff2html-ui-slim.js";
-import { getDiff, getInfo, getOptions } from "../api";
-import { type CommentOutputMode } from "../options";
-
-enum DiffSide {
-  Old = "old",
-  New = "new",
-}
+import { getDiff, getInfo, getOptions, getSourceLines, type ProjectRef } from "../api";
+import { type CommentOutputMode, type DiffSide } from "../options";
 
 type FileStatus = "M" | "A" | "D";
 
@@ -70,15 +65,6 @@ interface PromptTemplateValues {
   review_scope: string;
 }
 
-interface ParsedDiffHunk {
-  oldStart: number;
-  oldCount: number;
-  newStart: number;
-  newCount: number;
-  lines: string[];
-  fileCandidates: string[];
-}
-
 const ALL_CHANGES = "__all__";
 const STAGED = "__staged__";
 const UNSTAGED = "__unstaged__";
@@ -103,130 +89,10 @@ function applyPromptTemplate(
     .join(values.review_scope);
 }
 
-function normalizeDiffPath(value: string): string {
-  if (value === "/dev/null") return "";
-  if (value.startsWith("a/") || value.startsWith("b/")) {
-    return value.slice(2);
-  }
-  return value;
-}
-
-function buildFileCandidates(oldPath: string, newPath: string): string[] {
-  const candidates = new Set<string>();
-  if (newPath) candidates.add(newPath);
-  if (oldPath) candidates.add(oldPath);
-  if (oldPath && newPath && oldPath !== newPath) {
-    candidates.add(`${oldPath} -> ${newPath}`);
-  }
-  return Array.from(candidates);
-}
-
-function parseUnifiedDiffHunks(diffText: string): ParsedDiffHunk[] {
-  const hunks: ParsedDiffHunk[] = [];
-  const lines = diffText.split("\n");
-
-  let oldPath = "";
-  let newPath = "";
-  let currentHunk: ParsedDiffHunk | null = null;
-
-  const flushHunk = () => {
-    if (!currentHunk) return;
-    hunks.push(currentHunk);
-    currentHunk = null;
-  };
-
-  for (const line of lines) {
-    if (line.startsWith("diff --git ")) {
-      flushHunk();
-      const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-      oldPath = match?.[1] ?? "";
-      newPath = match?.[2] ?? "";
-      continue;
-    }
-
-    if (line.startsWith("rename from ")) {
-      oldPath = line.slice(12).trim();
-      continue;
-    }
-
-    if (line.startsWith("rename to ")) {
-      newPath = line.slice(10).trim();
-      continue;
-    }
-
-    if (line.startsWith("--- ")) {
-      const parsed = normalizeDiffPath(line.slice(4).trim());
-      if (parsed) oldPath = parsed;
-      continue;
-    }
-
-    if (line.startsWith("+++ ")) {
-      const parsed = normalizeDiffPath(line.slice(4).trim());
-      if (parsed) newPath = parsed;
-      continue;
-    }
-
-    if (line.startsWith("@@ ")) {
-      flushHunk();
-      const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-      if (!match) continue;
-
-      currentHunk = {
-        oldStart: Number(match[1]),
-        oldCount: Number(match[2] ?? "1"),
-        newStart: Number(match[3]),
-        newCount: Number(match[4] ?? "1"),
-        lines: [line],
-        fileCandidates: buildFileCandidates(oldPath, newPath),
-      };
-      continue;
-    }
-
-    if (currentHunk) {
-      currentHunk.lines.push(line);
-    }
-  }
-
-  flushHunk();
-  return hunks;
-}
-
-function matchesFileName(selectionFile: string, candidates: string[]): boolean {
-  if (candidates.includes(selectionFile)) return true;
-
-  if (selectionFile.includes(" -> ")) {
-    const parts = selectionFile.split(" -> ").map((part) => part.trim());
-    if (parts.every((part) => candidates.includes(part))) return true;
-  }
-
-  return candidates.some(
-    (candidate) =>
-      candidate.endsWith(selectionFile) || selectionFile.endsWith(candidate),
-  );
-}
-
-function hunkMatchesSelection(
-  selection: Selection,
-  hunk: ParsedDiffHunk,
-): boolean {
-  if (!matchesFileName(selection.fileName, hunk.fileCandidates)) {
-    return false;
-  }
-
-  const start =
-    selection.diffSide === DiffSide.Old ? hunk.oldStart : hunk.newStart;
-  const count =
-    selection.diffSide === DiffSide.Old ? hunk.oldCount : hunk.newCount;
-  if (count <= 0) return false;
-  const end = start + count - 1;
-
-  return selection.startLine <= end && selection.endLine >= start;
-}
-
 function formatLineNumberComment(comment: CommentRecord): string {
   const selection = comment.selection;
   const sideLabel =
-    selection.diffSide === DiffSide.Old
+    selection.diffSide === "old"
       ? "old code (before the change)"
       : "new code (after the change)";
   const lineLabel =
@@ -236,67 +102,26 @@ function formatLineNumberComment(comment: CommentRecord): string {
   return `${selection.fileName} lines ${lineLabel} on the ${sideLabel}\n\n\`\`\`\n${comment.text}\n\`\`\``;
 }
 
-function formatSelectedLinesComment(
+async function formatSelectedLinesComment(
   comment: CommentRecord,
-  hunks: ParsedDiffHunk[],
-): string {
-  const matchingHunks = hunks.filter((hunk) =>
-    hunkMatchesSelection(comment.selection, hunk),
-  );
-  if (matchingHunks.length === 0) {
+  ref: ProjectRef,
+): Promise<string> {
+  const { fileName, startLine, endLine, diffSide } = comment.selection;
+  try {
+    const lines = await getSourceLines(ref, fileName, startLine, endLine, diffSide);
+    const header = formatLineNumberComment(comment).split("\n\n```")[0];
+    return `${header}\n\n\`\`\`\n${lines}\n\`\`\`\n\n\`\`\`\n${comment.text}\n\`\`\``;
+  } catch {
     return formatLineNumberComment(comment);
   }
-
-  const base = formatLineNumberComment(comment).split("\n\n```")[0] ?? "";
-  const selectedLines: string[] = [];
-
-  for (const hunk of matchingHunks) {
-    let oldLine = hunk.oldStart;
-    let newLine = hunk.newStart;
-
-    for (const line of hunk.lines) {
-      if (line.startsWith("@@ ")) continue;
-      if (line.startsWith("\\")) continue;
-
-      const marker = line[0] ?? "";
-      const includeOld = marker !== "+";
-      const includeNew = marker !== "-";
-
-      if (includeOld) {
-        const isInRange =
-          comment.selection.diffSide === DiffSide.Old &&
-          oldLine >= comment.selection.startLine &&
-          oldLine <= comment.selection.endLine;
-        if (isInRange) selectedLines.push(line);
-        oldLine += 1;
-      }
-
-      if (includeNew) {
-        const isInRange =
-          comment.selection.diffSide === DiffSide.New &&
-          newLine >= comment.selection.startLine &&
-          newLine <= comment.selection.endLine;
-        if (isInRange) selectedLines.push(line);
-        newLine += 1;
-      }
-    }
-  }
-
-  if (selectedLines.length === 0) {
-    return formatLineNumberComment(comment);
-  }
-
-  return `${base}\n\n\`\`\`diff\n${selectedLines.join("\n")}\n\`\`\`\n\n\`\`\`\n${comment.text}\n\`\`\``;
 }
 
-function formatCommentBlock(
+async function formatCommentBlock(
   comment: CommentRecord,
   mode: CommentOutputMode,
-  hunks: ParsedDiffHunk[],
-): string {
-  if (mode === "selected_lines") {
-    return formatSelectedLinesComment(comment, hunks);
-  }
+  ref: ProjectRef,
+): Promise<string> {
+  if (mode === "selected_lines") return formatSelectedLinesComment(comment, ref);
   return formatLineNumberComment(comment);
 }
 
@@ -511,7 +336,7 @@ export default class ReviewController extends Controller {
   private storage = new CommentStorage();
   private currentProjectOrigin = "repo";
   private currentBranchName = "current";
-  private currentDiffText = "";
+  private currentRef: ProjectRef = { branch: "", base: "", commit: "" };
   private sidebarVisible = true;
   private fileEntries: FileEntry[] = [];
   private fileButtons = new Map<string, HTMLButtonElement>();
@@ -562,14 +387,14 @@ export default class ReviewController extends Controller {
     const branch = this.branchSelectTarget.value;
     const base = this.baseBranchSelectTarget.value;
     const commit = this.commitSelectTarget.value;
+    this.currentRef = { branch, base, commit };
     const [diff, options] = await Promise.all([
-      getDiff({ branch, base, commit }),
+      getDiff(this.currentRef),
       getOptions(),
     ]);
 
     const outputFormat =
       options.diff.style === "inline" ? "line-by-line" : "side-by-side";
-    this.currentDiffText = diff.diff.diff;
 
     this.outputTarget.innerHTML = "";
     const diff2htmlUi = new Diff2HtmlUI(this.outputTarget, diff.diff.diff, {
@@ -687,12 +512,8 @@ export default class ReviewController extends Controller {
 
     const options = await getOptions();
     const outputMode = options.prompt.comment_output_mode;
-    const parsedHunks =
-      outputMode === "selected_lines"
-        ? parseUnifiedDiffHunks(this.currentDiffText)
-        : [];
-    const blocks = branchComments.map((comment) =>
-      formatCommentBlock(comment, outputMode, parsedHunks),
+    const blocks = await Promise.all(
+      branchComments.map((c) => formatCommentBlock(c, outputMode, this.currentRef)),
     );
 
     let commentsBlock = blocks.join("\n\n---\n\n");
@@ -1345,7 +1166,7 @@ export default class ReviewController extends Controller {
     if (!fileName) return null;
 
     const sideContainer = lineCell.closest(".d2h-file-side-diff");
-    let diffSide = DiffSide.New;
+    let diffSide: DiffSide = "new";
 
     const filesDiff = lineCell.closest(".d2h-files-diff");
     if (filesDiff && sideContainer) {
@@ -1353,15 +1174,15 @@ export default class ReviewController extends Controller {
         filesDiff.querySelectorAll(":scope > .d2h-file-side-diff"),
       );
       if (sides[0] === sideContainer) {
-        diffSide = DiffSide.Old;
+        diffSide = "old";
       } else if (sides.length > 1) {
-        diffSide = DiffSide.New;
+        diffSide = "new";
       }
     } else if (
       lineCell.classList.contains("d2h-old") ||
       row.classList.contains("d2h-del")
     ) {
-      diffSide = DiffSide.Old;
+      diffSide = "old";
     }
 
     return {

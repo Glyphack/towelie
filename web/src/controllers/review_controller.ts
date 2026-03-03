@@ -1,11 +1,7 @@
 import { Controller } from "@hotwired/stimulus";
 import { Diff2HtmlUI } from "diff2html/lib/ui/js/diff2html-ui-slim.js";
-import { getDiff, getInfo, getOptions } from "../api";
-
-enum DiffSide {
-  Old = "old",
-  New = "new",
-}
+import { getDiff, getInfo, getOptions, getSourceLines, type ProjectRef } from "../api";
+import { type CommentOutputMode, type DiffSide } from "../options";
 
 type FileStatus = "M" | "A" | "D";
 
@@ -60,9 +56,23 @@ interface FileTreeNode {
   files: FileEntry[];
 }
 
+interface PromptTemplateValues {
+  comments: string;
+  branch: string;
+  comment_count: string;
+  commit_ref: string;
+  commit_sha: string;
+  review_scope: string;
+}
+
+const ALL_CHANGES = "__all__";
+const STAGED = "__staged__";
+const UNSTAGED = "__unstaged__";
+const UNCOMMITTED = "__uncommitted__";
+
 function applyPromptTemplate(
   template: string,
-  values: { comments: string; branch: string; comment_count: string },
+  values: PromptTemplateValues,
 ): string {
   return template
     .split("{{comments}}")
@@ -70,7 +80,67 @@ function applyPromptTemplate(
     .split("{{branch}}")
     .join(values.branch)
     .split("{{comment_count}}")
-    .join(values.comment_count);
+    .join(values.comment_count)
+    .split("{{commit_ref}}")
+    .join(values.commit_ref)
+    .split("{{commit_sha}}")
+    .join(values.commit_sha)
+    .split("{{review_scope}}")
+    .join(values.review_scope);
+}
+
+function formatLineNumberComment(comment: CommentRecord): string {
+  const selection = comment.selection;
+  const sideLabel =
+    selection.diffSide === "old"
+      ? "old code (before the change)"
+      : "new code (after the change)";
+  const lineLabel =
+    selection.startLine === selection.endLine
+      ? `${selection.startLine}`
+      : `${selection.startLine}-${selection.endLine}`;
+  return `${selection.fileName} lines ${lineLabel} on the ${sideLabel}\n\n\`\`\`\n${comment.text}\n\`\`\``;
+}
+
+async function formatSelectedLinesComment(
+  comment: CommentRecord,
+  ref: ProjectRef,
+): Promise<string> {
+  const { fileName, startLine, endLine, diffSide } = comment.selection;
+  try {
+    const lines = await getSourceLines(ref, fileName, startLine, endLine, diffSide);
+    const header = formatLineNumberComment(comment).split("\n\n```")[0];
+    return `${header}\n\n\`\`\`\n${lines}\n\`\`\`\n\n\`\`\`\n${comment.text}\n\`\`\``;
+  } catch {
+    return formatLineNumberComment(comment);
+  }
+}
+
+async function formatCommentBlock(
+  comment: CommentRecord,
+  mode: CommentOutputMode,
+  ref: ProjectRef,
+): Promise<string> {
+  if (mode === "selected_lines") return formatSelectedLinesComment(comment, ref);
+  return formatLineNumberComment(comment);
+}
+
+function resolveCommitRef(commitValue: string): {
+  commitRef: string;
+  commitSha: string;
+} {
+  if (commitValue === STAGED)
+    return { commitRef: "staged changes", commitSha: "" };
+  if (commitValue === UNSTAGED) {
+    return { commitRef: "unstaged changes", commitSha: "" };
+  }
+  if (commitValue === UNCOMMITTED) {
+    return { commitRef: "uncommited changes", commitSha: "" };
+  }
+  if (!commitValue || commitValue === ALL_CHANGES) {
+    return { commitRef: "all changes", commitSha: "" };
+  }
+  return { commitRef: commitValue, commitSha: commitValue };
 }
 
 function flashButton(btn: HTMLButtonElement, message: string, ms: number) {
@@ -264,7 +334,9 @@ export default class ReviewController extends Controller {
   declare readonly submitNotesTarget: HTMLTextAreaElement;
 
   private storage = new CommentStorage();
+  private currentProjectOrigin = "repo";
   private currentBranchName = "current";
+  private currentRef: ProjectRef = { branch: "", base: "", commit: "" };
   private sidebarVisible = true;
   private fileEntries: FileEntry[] = [];
   private fileButtons = new Map<string, HTMLButtonElement>();
@@ -297,6 +369,16 @@ export default class ReviewController extends Controller {
     this.mainScrollTarget.removeEventListener("scroll", this.onMainScroll);
   }
 
+  async refreshDiff(event: Event) {
+    const btn = event.currentTarget as HTMLButtonElement | null;
+    if (btn) btn.disabled = true;
+    try {
+      await this.reloadReview();
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   async reloadReview() {
     await this.populateInfo();
     this.closePanel();
@@ -305,8 +387,9 @@ export default class ReviewController extends Controller {
     const branch = this.branchSelectTarget.value;
     const base = this.baseBranchSelectTarget.value;
     const commit = this.commitSelectTarget.value;
+    this.currentRef = { branch, base, commit };
     const [diff, options] = await Promise.all([
-      getDiff({ branch, base, commit }),
+      getDiff(this.currentRef),
       getOptions(),
     ]);
 
@@ -336,6 +419,7 @@ export default class ReviewController extends Controller {
 
   async populateInfo() {
     const info = await getInfo();
+    this.currentProjectOrigin = info.origin;
     this.currentBranchName = info.current_branch;
     const branchSelect = this.branchSelectTarget;
     const baseBranchSelect = this.baseBranchSelectTarget;
@@ -415,9 +499,10 @@ export default class ReviewController extends Controller {
   async finishReview(e: Event) {
     const btn = e.currentTarget as HTMLButtonElement;
     const selectedBranch = this.branchSelectTarget.value;
-    const storageBranch = selectedBranch || "current";
     const renderedBranch = selectedBranch || this.currentBranchName;
-    const branchComments = this.storage.forBranch(storageBranch);
+    const storageScope = this.currentStorageScope();
+    const selectedCommit = this.commitSelectTarget.value;
+    const branchComments = this.storage.forBranch(storageScope);
     const overallNotes = this.submitNotesTarget.value.trim();
 
     if (branchComments.length === 0 && !overallNotes) {
@@ -425,18 +510,11 @@ export default class ReviewController extends Controller {
       return;
     }
 
-    const blocks = branchComments.map((comment) => {
-      const selection = comment.selection;
-      const sideLabel =
-        selection.diffSide === DiffSide.Old
-          ? "old code (before the change)"
-          : "new code (after the change)";
-      const lineLabel =
-        selection.startLine === selection.endLine
-          ? `${selection.startLine}`
-          : `${selection.startLine}-${selection.endLine}`;
-      return `${selection.fileName} lines ${lineLabel} on the ${sideLabel}\n\n\`\`\`\n${comment.text}\n\`\`\``;
-    });
+    const options = await getOptions();
+    const outputMode = options.prompt.comment_output_mode;
+    const blocks = await Promise.all(
+      branchComments.map((c) => formatCommentBlock(c, outputMode, this.currentRef)),
+    );
 
     let commentsBlock = blocks.join("\n\n---\n\n");
     if (overallNotes) {
@@ -445,11 +523,19 @@ export default class ReviewController extends Controller {
         : `Overall notes:\n${overallNotes}`;
     }
 
-    const template = (await getOptions()).prompt.template;
+    const { commitRef, commitSha } = resolveCommitRef(selectedCommit);
+    const reviewScope = commitSha
+      ? `This is a review on branch ${renderedBranch} with commit ${commitSha}.`
+      : `This is a review on branch ${renderedBranch} with ${commitRef}.`;
+
+    const template = options.prompt.template;
     let reviewText = applyPromptTemplate(template, {
       comments: commentsBlock,
       branch: renderedBranch,
       comment_count: String(branchComments.length),
+      commit_ref: commitRef,
+      commit_sha: commitSha,
+      review_scope: reviewScope,
     });
 
     if (!template.includes("{{comments}}")) {
@@ -458,7 +544,7 @@ export default class ReviewController extends Controller {
     }
 
     await navigator.clipboard.writeText(reviewText);
-    this.storage.clearBranch(storageBranch);
+    this.storage.clearBranch(storageScope);
     this.renderComments();
     flashButton(btn, "Copied to clipboard!", 2000);
   }
@@ -495,7 +581,7 @@ export default class ReviewController extends Controller {
     this.fileButtons.clear();
     this.fileExplorerTarget.innerHTML = "";
 
-    const comments = this.storage.forBranch(this.currentStorageBranch());
+    const comments = this.storage.forBranch(this.currentStorageScope());
     const commentedFiles = new Set(
       comments.map((comment) => comment.selection.fileName),
     );
@@ -637,7 +723,7 @@ export default class ReviewController extends Controller {
   }
 
   private renderComments() {
-    const branch = this.currentStorageBranch();
+    const branch = this.currentStorageScope();
     const comments = this.storage.forBranch(branch);
 
     this.commentCountTarget.textContent = `${comments.length} notes`;
@@ -901,7 +987,7 @@ export default class ReviewController extends Controller {
     saveBtn.addEventListener("click", () => {
       const text = textarea.value.trim();
       if (!text) return;
-      this.storage.add(selection, text, this.currentStorageBranch());
+      this.storage.add(selection, text, this.currentStorageScope());
       this.renderComments();
     });
 
@@ -948,7 +1034,7 @@ export default class ReviewController extends Controller {
 
   private commentsForLocation(location: LineLocation): CommentRecord[] {
     return this.storage
-      .forBranch(this.currentStorageBranch())
+      .forBranch(this.currentStorageScope())
       .filter((comment) => {
         const selection = comment.selection;
         return (
@@ -960,8 +1046,10 @@ export default class ReviewController extends Controller {
       });
   }
 
-  private currentStorageBranch(): string {
-    return this.branchSelectTarget.value || "current";
+  private currentStorageScope(): string {
+    const branch = this.branchSelectTarget.value || this.currentBranchName;
+    const commit = this.commitSelectTarget.value || ALL_CHANGES;
+    return `v2|${this.currentProjectOrigin}|${branch}|${commit}`;
   }
 
   private scrollToFile(anchorId: string) {
@@ -1078,7 +1166,7 @@ export default class ReviewController extends Controller {
     if (!fileName) return null;
 
     const sideContainer = lineCell.closest(".d2h-file-side-diff");
-    let diffSide = DiffSide.New;
+    let diffSide: DiffSide = "new";
 
     const filesDiff = lineCell.closest(".d2h-files-diff");
     if (filesDiff && sideContainer) {
@@ -1086,15 +1174,15 @@ export default class ReviewController extends Controller {
         filesDiff.querySelectorAll(":scope > .d2h-file-side-diff"),
       );
       if (sides[0] === sideContainer) {
-        diffSide = DiffSide.Old;
+        diffSide = "old";
       } else if (sides.length > 1) {
-        diffSide = DiffSide.New;
+        diffSide = "new";
       }
     } else if (
       lineCell.classList.contains("d2h-old") ||
       row.classList.contains("d2h-del")
     ) {
-      diffSide = DiffSide.Old;
+      diffSide = "old";
     }
 
     return {
@@ -1124,7 +1212,7 @@ export default class ReviewController extends Controller {
     return this.buildContextFromCell(lineCell, row);
   }
 
-  private onMouseDown = (event: MouseEvent) => {
+  private onMouseDown(event: MouseEvent) {
     const context = this.getLineContext(event.target);
     if (!context) return;
 
@@ -1147,9 +1235,9 @@ export default class ReviewController extends Controller {
     this.selectionState.dragMoved = false;
     this.selectionState.usedAnchor = hasAnchor;
     this.updateSelectionHighlight();
-  };
+  }
 
-  private onMouseMove = (event: MouseEvent) => {
+  private onMouseMove(event: MouseEvent) {
     if (!this.selectionState.selecting || !this.selectionState.start) return;
     const context = this.getLineContext(event.target);
     if (!context) return;
@@ -1166,9 +1254,9 @@ export default class ReviewController extends Controller {
       this.selectionState.dragMoved ||
       this.selectionState.start.lineNumber !== context.location.lineNumber;
     this.updateSelectionHighlight();
-  };
+  }
 
-  private onMouseUp = () => {
+  private onMouseUp() {
     if (!this.selectionState.selecting) return;
     this.selectionState.selecting = false;
 
@@ -1192,14 +1280,14 @@ export default class ReviewController extends Controller {
 
     this.openDraftPanel(row, selection);
     this.resetSelectionState();
-  };
+  }
 
-  private onMainScroll = () => {
+  private onMainScroll() {
     if (this.scrollTicking) return;
     this.scrollTicking = true;
     window.requestAnimationFrame(() => {
       this.scrollTicking = false;
       this.updateActiveFileFromScroll();
     });
-  };
+  }
 }

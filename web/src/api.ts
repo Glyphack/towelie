@@ -1,4 +1,10 @@
-import { type AppOptions } from "./options";
+import { type AppOptions, type DiffSide } from "./options";
+
+export interface ProjectRef {
+  branch: string;
+  base: string;
+  commit: string;
+}
 
 export interface CommitInfo {
   hash: string;
@@ -34,6 +40,7 @@ export interface ChecksResponse {
 
 export interface ProjectInfo {
   project_name: string;
+  origin: string;
   current_branch: string;
   base_branch: string;
   branches: Branch[];
@@ -50,21 +57,18 @@ export async function getInfo(): Promise<ProjectInfo> {
   const data = await parseJson(await fetch("/api/info"));
   return {
     project_name: data.project_name,
+    origin: data.origin,
     current_branch: data.current_branch,
     base_branch: data.base_branch,
     branches: data.branches,
   };
 }
 
-export async function getDiff(params: {
-  branch?: string;
-  base?: string;
-  commit?: string;
-}): Promise<DiffResponse> {
+export async function getDiff(ref: ProjectRef): Promise<DiffResponse> {
   const qs = new URLSearchParams();
-  if (params.branch) qs.set("branch", params.branch);
-  if (params.base) qs.set("base", params.base);
-  if (params.commit) qs.set("commit", params.commit);
+  if (ref.branch) qs.set("branch", ref.branch);
+  if (ref.base) qs.set("base", ref.base);
+  if (ref.commit) qs.set("commit", ref.commit);
 
   const url = qs.toString() ? `/api/diff?${qs.toString()}` : "/api/diff";
   const data = await parseJson(await fetch(url));
@@ -74,6 +78,26 @@ export async function getDiff(params: {
       files: data.diff.files,
     },
   };
+}
+
+export async function getSourceLines(
+  ref: ProjectRef,
+  file: string,
+  start: number,
+  end: number,
+  side: DiffSide,
+): Promise<string> {
+  const qs = new URLSearchParams({
+    file,
+    start: String(start),
+    end: String(end),
+    side,
+    branch: ref.branch,
+    base: ref.base,
+    commit: ref.commit,
+  });
+  const data = await parseJson(await fetch(`/api/source?${qs}`));
+  return data.lines as string;
 }
 
 export async function getChecks(): Promise<ChecksResponse> {

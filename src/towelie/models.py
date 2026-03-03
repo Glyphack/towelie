@@ -1,8 +1,16 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator
 
-from towelie.options import DiffStyle
+from towelie.options import CommentOutputMode, DiffSide, DiffStyle
+
+ALL_CHANGES = "__all__"
+UNCOMMITTED = "__uncommitted__"
+STAGED = "__staged__"
+UNSTAGED = "__unstaged__"
 
 
 class CheckStatus(StrEnum):
@@ -22,6 +30,7 @@ class DiffResponse(BaseModel):
 
 class PromptOptionsPayload(BaseModel):
     template: str = Field(min_length=1)
+    comment_output_mode: CommentOutputMode = CommentOutputMode.LINE_NUMBERS
 
     @field_validator("template")
     @classmethod
@@ -63,6 +72,49 @@ class Branch(BaseModel):
 
 class ProjectInfoResponse(BaseModel):
     project_name: str
+    origin: str
     current_branch: str
     base_branch: str
     branches: list[Branch]
+
+
+class ProjectRef(BaseModel):
+    branch: str = ""
+    base: str = ""
+    commit: str = ""
+
+
+async def parse_project_ref(
+    branch: str = "", base: str = "", commit: str = ""
+) -> ProjectRef:
+    return ProjectRef(branch=branch, base=base, commit=commit)
+
+
+@dataclass
+class WorktreeRef:
+    """Read from working tree (unstaged/uncommitted)"""
+
+
+@dataclass
+class IndexRef:
+    """Read from git staging index"""
+
+
+@dataclass
+class CommitRef:
+    sha: str
+
+
+GitRef = WorktreeRef | IndexRef | CommitRef
+
+
+def resolve_git_ref(project_ref: ProjectRef, side: DiffSide) -> GitRef:
+    if side == DiffSide.OLD:
+        return CommitRef(sha=project_ref.base or "HEAD")
+    if project_ref.commit == STAGED:
+        return IndexRef()
+    if project_ref.commit in (UNSTAGED, UNCOMMITTED):
+        return WorktreeRef()
+    if project_ref.commit and project_ref.commit != ALL_CHANGES:
+        return CommitRef(sha=project_ref.commit)
+    return CommitRef(sha=project_ref.branch or "HEAD")

@@ -128,6 +128,15 @@ body_class %}overflow-hidden{% endblock %} {% block body %}
             class="towelie-input towelie-select max-w-[360px] min-w-56 px-2 py-1.5 font-mono text-[11px]"
           ></select>
         </div>
+        <button
+          type="button"
+          class="h-8 w-8 rounded-md border border-[var(--color-paper-line)] text-[13px] text-[var(--color-text-faint)] transition-colors hover:border-[var(--color-text-faint)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
+          data-action="review#refreshDiff"
+          title="Refresh diff"
+          aria-label="Refresh diff"
+        >
+          ↻
+        </button>
       </div>
     </header>
 

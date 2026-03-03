@@ -356,6 +356,8 @@ class AppContext:
 
 
 async def get_git_root() -> Path:
+    given_path = os.environ.get("TOWELIE_GIT_PATH")
+    cwd = Path(given_path) if given_path else None
     _log_cmd(["git", "rev-parse", "--show-toplevel"])
     proc = await asyncio.create_subprocess_exec(
         "git",
@@ -363,6 +365,7 @@ async def get_git_root() -> Path:
         "--show-toplevel",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
     )
     stdout, _ = await proc.communicate()
     if proc.returncode != 0:

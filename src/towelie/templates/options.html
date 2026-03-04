@@ -76,6 +76,14 @@ options{% endblock %} {% block body %}
       >
         Save options
       </button>
+      <button
+        type="button"
+        data-options-target="resetButton"
+        data-action="click->options#reset"
+        class="rounded-lg border border-[var(--color-paper-line)] px-4 py-2 text-sm font-medium text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-paper-dim)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        Reset to defaults
+      </button>
       <span data-options-target="status" class="text-sm text-[var(--color-text-dim)]"></span>
     </div>
   </form>

@@ -10,7 +10,7 @@
     "tailwindcss": "^4.1.18"
   },
   "scripts": {
-    "build": "bun install --frozen-lockfile && bun build web/src/main.ts --bundle --outdir=./src/towelie/static && tailwindcss -i ./src/towelie/static/input.css -o ./src/towelie/static/output.css --minify",
+    "build": "bun install --frozen-lockfile && cd web && bunx tsc --noEmit && cd .. && bun build web/src/main.ts --bundle --outdir=./src/towelie/static && tailwindcss -i ./src/towelie/static/input.css -o ./src/towelie/static/output.css --minify",
     "watch": "sh -c 'bun build web/src/main.ts --bundle --outdir=./src/towelie/static --watch & tailwindcss -i ./src/towelie/static/input.css -o ./src/towelie/static/output.css --watch & wait'"
   },
   "devDependencies": {

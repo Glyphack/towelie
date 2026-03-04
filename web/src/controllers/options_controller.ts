@@ -1,5 +1,5 @@
 import { Controller } from "@hotwired/stimulus";
-import { getOptions, updateOptions } from "../api";
+import { getOptions, updateOptions, resetOptions } from "../api";
 import {
   type AppOptions,
   type CommentOutputMode,
@@ -13,6 +13,7 @@ export default class OptionsController extends Controller {
     "diffStyle",
     "status",
     "saveButton",
+    "resetButton",
   ];
 
   declare readonly promptTemplateTarget: HTMLTextAreaElement;
@@ -20,6 +21,7 @@ export default class OptionsController extends Controller {
   declare readonly diffStyleTarget: HTMLSelectElement;
   declare readonly statusTarget: HTMLElement;
   declare readonly saveButtonTarget: HTMLButtonElement;
+  declare readonly resetButtonTarget: HTMLButtonElement;
 
   async connect() {
     const options = await getOptions();
@@ -61,6 +63,23 @@ export default class OptionsController extends Controller {
       this.setStatus("Failed to save options", "text-sm text-[var(--color-del)]");
     } finally {
       this.saveButtonTarget.disabled = false;
+    }
+  }
+
+  async reset(event: Event) {
+    event.preventDefault();
+
+    this.resetButtonTarget.disabled = true;
+    this.setStatus("Resetting...", "text-sm text-[var(--color-text-dim)]");
+
+    try {
+      await resetOptions();
+      await this.connect();
+      this.setStatus("Reset to defaults", "text-sm text-[var(--color-add)]");
+    } catch {
+      this.setStatus("Failed to reset", "text-sm text-[var(--color-del)]");
+    } finally {
+      this.resetButtonTarget.disabled = false;
     }
   }
 

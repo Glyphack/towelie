@@ -125,22 +125,22 @@ async function formatCommentBlock(
   return formatLineNumberComment(comment);
 }
 
-function resolveCommitRef(commitValue: string): {
-  commitRef: string;
-  commitSha: string;
-} {
-  if (commitValue === STAGED)
-    return { commitRef: "staged changes", commitSha: "" };
-  if (commitValue === UNSTAGED) {
-    return { commitRef: "unstaged changes", commitSha: "" };
+class CommitRef {
+  constructor(readonly value: string) {}
+
+  get label(): string {
+    if (this.value === STAGED) return "staged changes";
+    if (this.value === UNSTAGED) return "unstaged changes";
+    if (this.value === UNCOMMITTED) return "uncommited changes";
+    if (!this.value || this.value === ALL_CHANGES) return "all changes";
+    return this.value;
   }
-  if (commitValue === UNCOMMITTED) {
-    return { commitRef: "uncommited changes", commitSha: "" };
+
+  get sha(): string {
+    if ([STAGED, UNSTAGED, UNCOMMITTED, ALL_CHANGES, ""].includes(this.value))
+      return "";
+    return this.value;
   }
-  if (!commitValue || commitValue === ALL_CHANGES) {
-    return { commitRef: "all changes", commitSha: "" };
-  }
-  return { commitRef: commitValue, commitSha: commitValue };
 }
 
 function flashButton(btn: HTMLButtonElement, message: string, ms: number) {
@@ -523,18 +523,18 @@ export default class ReviewController extends Controller {
         : `Overall notes:\n${overallNotes}`;
     }
 
-    const { commitRef, commitSha } = resolveCommitRef(selectedCommit);
-    const reviewScope = commitSha
-      ? `This is a review on branch ${renderedBranch} with commit ${commitSha}.`
-      : `This is a review on branch ${renderedBranch} with ${commitRef}.`;
+    const commitRef = new CommitRef(selectedCommit);
+    const reviewScope = commitRef.sha
+      ? `This is a review on branch ${renderedBranch} with commit ${commitRef.sha}.`
+      : `This is a review on branch ${renderedBranch} with ${commitRef.label}.`;
 
     const template = options.prompt.template;
     let reviewText = applyPromptTemplate(template, {
       comments: commentsBlock,
       branch: renderedBranch,
       comment_count: String(branchComments.length),
-      commit_ref: commitRef,
-      commit_sha: commitSha,
+      commit_ref: commitRef.label,
+      commit_sha: commitRef.sha,
       review_scope: reviewScope,
     });
 

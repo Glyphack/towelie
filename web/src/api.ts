@@ -117,6 +117,10 @@ export async function getOptions(): Promise<AppOptions> {
   };
 }
 
+export async function resetOptions(): Promise<void> {
+  await parseJson(await fetch("/api/options", { method: "DELETE" }));
+}
+
 export async function updateOptions(payload: AppOptions): Promise<AppOptions> {
   const data = await parseJson(
     await fetch("/api/options", {

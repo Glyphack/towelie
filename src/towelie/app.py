@@ -541,6 +541,11 @@ async def update_options(payload: AppOptionsPayload) -> AppOptions:
     return APP_CONTEXT.options_store.save(options)
 
 
+@app.delete("/api/options")
+async def reset_options() -> AppOptions:
+    return APP_CONTEXT.options_store.save(AppOptions.defaults())
+
+
 @app.get("/api/diff")
 async def diff(
     project_ref: Annotated[ProjectRef, Depends(parse_project_ref)],

@@ -8,10 +8,21 @@ from pydantic import BaseModel, Field, field_validator
 
 
 DEFAULT_PROMPT_TEMPLATE = (
-    "You are reviewing a code change.\n\n"
+    "Apply the following code review comments to the codebase. "
+    "For each comment, make the exact change requested. "
+    "Read the relevant file before editing it. "
+    "Do not make changes beyond what each comment asks for.\n\n"
+    "<review_context>\n"
     "{{review_scope}}\n"
-    "Total comments: {{comment_count}}\n\n"
-    "{{comments}}"
+    "Total comments: {{comment_count}}\n"
+    "If you need to understand how the code looked before or after a change, "
+    "run `git diff {{commit_ref}}` on branch {{branch}} to get the full diff.\n"
+    "</review_context>\n\n"
+    "<review_comments>\n"
+    "Each comment indicates whether it is on the new code (after the change) or the old code (before the change). "
+    "Comments on old code point to something that was removed or existed before — use git diff to understand the context.\n\n"
+    "{{comments}}\n"
+    "</review_comments>"
 )
 
 

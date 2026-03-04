@@ -544,6 +544,7 @@ export default class ReviewController extends Controller {
     }
 
     await navigator.clipboard.writeText(reviewText);
+    this.submitNotesTarget.value = "";
     this.storage.clearBranch(storageScope);
     this.renderComments();
     flashButton(btn, "Copied to clipboard!", 2000);
@@ -1212,7 +1213,7 @@ export default class ReviewController extends Controller {
     return this.buildContextFromCell(lineCell, row);
   }
 
-  private onMouseDown(event: MouseEvent) {
+  private onMouseDown = (event: MouseEvent) => {
     const context = this.getLineContext(event.target);
     if (!context) return;
 
@@ -1235,9 +1236,9 @@ export default class ReviewController extends Controller {
     this.selectionState.dragMoved = false;
     this.selectionState.usedAnchor = hasAnchor;
     this.updateSelectionHighlight();
-  }
+  };
 
-  private onMouseMove(event: MouseEvent) {
+  private onMouseMove = (event: MouseEvent) => {
     if (!this.selectionState.selecting || !this.selectionState.start) return;
     const context = this.getLineContext(event.target);
     if (!context) return;
@@ -1254,9 +1255,9 @@ export default class ReviewController extends Controller {
       this.selectionState.dragMoved ||
       this.selectionState.start.lineNumber !== context.location.lineNumber;
     this.updateSelectionHighlight();
-  }
+  };
 
-  private onMouseUp() {
+  private onMouseUp = () => {
     if (!this.selectionState.selecting) return;
     this.selectionState.selecting = false;
 
@@ -1280,14 +1281,14 @@ export default class ReviewController extends Controller {
 
     this.openDraftPanel(row, selection);
     this.resetSelectionState();
-  }
+  };
 
-  private onMainScroll() {
+  private onMainScroll = () => {
     if (this.scrollTicking) return;
     this.scrollTicking = true;
     window.requestAnimationFrame(() => {
       this.scrollTicking = false;
       this.updateActiveFileFromScroll();
     });
-  }
+  };
 }

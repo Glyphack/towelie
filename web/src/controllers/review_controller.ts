@@ -1,7 +1,7 @@
 import { Controller } from "@hotwired/stimulus";
 import { Diff2HtmlUI } from "diff2html/lib/ui/js/diff2html-ui-slim.js";
 import { getDiff, getInfo, getOptions, getSourceLines, type ProjectRef } from "../api";
-import { type CommentOutputMode, type DiffSide } from "../options";
+import { type CommentOutputMode, type DefaultCommit, type DiffSide } from "../options";
 
 type FileStatus = "M" | "A" | "D";
 
@@ -418,7 +418,7 @@ export default class ReviewController extends Controller {
   }
 
   async populateInfo() {
-    const info = await getInfo();
+    const [info, options] = await Promise.all([getInfo(), getOptions()]);
     this.currentProjectOrigin = info.origin;
     this.currentBranchName = info.current_branch;
     const branchSelect = this.branchSelectTarget;
@@ -472,11 +472,17 @@ export default class ReviewController extends Controller {
       commitSelect.appendChild(option);
     });
 
-    commitSelect.value = commits.some((commit) => commit.hash === savedCommit)
-      ? savedCommit
-      : commits.length > 0
-        ? commits[0].hash
-        : "";
+    const commitHashes = commits.map((c) => c.hash);
+    if (savedCommit && commitHashes.includes(savedCommit)) {
+      commitSelect.value = savedCommit;
+    } else {
+      const defaultCommit = options.default_commit as DefaultCommit;
+      commitSelect.value = commitHashes.includes(defaultCommit)
+        ? defaultCommit
+        : commits.length > 0
+          ? commits[0].hash
+          : "";
+    }
   }
 
   toggleSidebar() {

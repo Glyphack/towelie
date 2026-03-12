@@ -114,6 +114,7 @@ export async function getOptions(): Promise<AppOptions> {
   return {
     prompt: data.prompt,
     diff: data.diff,
+    default_commit: data.default_commit,
   };
 }
 
@@ -134,5 +135,6 @@ export async function updateOptions(payload: AppOptions): Promise<AppOptions> {
   return {
     prompt: data.prompt,
     diff: data.diff,
+    default_commit: data.default_commit,
   };
 }

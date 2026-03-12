@@ -537,6 +537,7 @@ async def update_options(payload: AppOptionsPayload) -> AppOptions:
             comment_output_mode=payload.prompt.comment_output_mode,
         ),
         diff=DiffOptions(style=payload.diff.style),
+        default_commit=payload.default_commit,
     )
     return APP_CONTEXT.options_store.save(options)
 

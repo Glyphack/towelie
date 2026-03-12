@@ -3,6 +3,7 @@ import { getOptions, updateOptions, resetOptions } from "../api";
 import {
   type AppOptions,
   type CommentOutputMode,
+  type DefaultCommit,
   type DiffStyle,
 } from "../options";
 
@@ -11,6 +12,7 @@ export default class OptionsController extends Controller {
     "promptTemplate",
     "commentOutputMode",
     "diffStyle",
+    "defaultCommit",
     "status",
     "saveButton",
     "resetButton",
@@ -19,6 +21,7 @@ export default class OptionsController extends Controller {
   declare readonly promptTemplateTarget: HTMLTextAreaElement;
   declare readonly commentOutputModeTarget: HTMLSelectElement;
   declare readonly diffStyleTarget: HTMLSelectElement;
+  declare readonly defaultCommitTarget: HTMLSelectElement;
   declare readonly statusTarget: HTMLElement;
   declare readonly saveButtonTarget: HTMLButtonElement;
   declare readonly resetButtonTarget: HTMLButtonElement;
@@ -28,6 +31,7 @@ export default class OptionsController extends Controller {
     this.promptTemplateTarget.value = options.prompt.template;
     this.commentOutputModeTarget.value = options.prompt.comment_output_mode;
     this.diffStyleTarget.value = options.diff.style;
+    this.defaultCommitTarget.value = options.default_commit;
   }
 
   async save(event: Event) {
@@ -45,6 +49,7 @@ export default class OptionsController extends Controller {
       diff: {
         style: this.diffStyleTarget.value as DiffStyle,
       },
+      default_commit: this.defaultCommitTarget.value as DefaultCommit,
     };
 
     try {
@@ -52,6 +57,7 @@ export default class OptionsController extends Controller {
       this.promptTemplateTarget.value = saved.prompt.template;
       this.commentOutputModeTarget.value = saved.prompt.comment_output_mode;
       this.diffStyleTarget.value = saved.diff.style;
+      this.defaultCommitTarget.value = saved.default_commit;
 
       const tag = document.getElementById("towelie-options-data");
       if (tag) {

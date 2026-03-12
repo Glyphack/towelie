@@ -45,6 +45,13 @@ class DiffSide(StrEnum):
     NEW = "new"
 
 
+class DefaultCommit(StrEnum):
+    ALL_CHANGES = "__all__"
+    UNCOMMITTED = "__uncommitted__"
+    STAGED = "__staged__"
+    UNSTAGED = "__unstaged__"
+
+
 class PromptOptions(BaseModel):
     template: str = DEFAULT_PROMPT_TEMPLATE
     comment_output_mode: CommentOutputMode = CommentOutputMode.LINE_NUMBERS
@@ -64,6 +71,7 @@ class DiffOptions(BaseModel):
 class AppOptions(BaseModel):
     prompt: PromptOptions = Field(default_factory=PromptOptions)
     diff: DiffOptions = Field(default_factory=DiffOptions)
+    default_commit: DefaultCommit = DefaultCommit.ALL_CHANGES
 
     @classmethod
     def defaults(cls) -> "AppOptions":
@@ -96,12 +104,18 @@ class AppOptions(BaseModel):
             if style in {DiffStyle.INLINE.value, DiffStyle.TWO_SIDES.value}:
                 diff_style = DiffStyle(style)
 
+        default_commit = defaults.default_commit
+        raw_default_commit = data.get("default_commit")
+        if raw_default_commit in {dc.value for dc in DefaultCommit}:
+            default_commit = DefaultCommit(raw_default_commit)
+
         return cls(
             prompt=PromptOptions(
                 template=prompt_template,
                 comment_output_mode=prompt_comment_output_mode,
             ),
             diff=DiffOptions(style=diff_style),
+            default_commit=default_commit,
         )
 
     def to_dict(self) -> dict:

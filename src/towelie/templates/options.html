@@ -68,6 +68,24 @@ options{% endblock %} {% block body %}
       </select>
     </div>
 
+    <div class="flex flex-col gap-2">
+      <label
+        for="default-commit"
+        class="text-[10px] font-medium tracking-[0.14em] text-[var(--color-text-faint)] uppercase"
+        >Default commit selection</label
+      >
+      <select
+        id="default-commit"
+        data-options-target="defaultCommit"
+        class="towelie-input towelie-select w-full px-3 py-2 text-sm"
+      >
+        <option value="__all__">All changes</option>
+        <option value="__uncommitted__">Uncommitted</option>
+        <option value="__staged__">Staged changes</option>
+        <option value="__unstaged__">Unstaged changes</option>
+      </select>
+    </div>
+
     <div class="flex items-center gap-3">
       <button
         type="submit"

@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator
 
-from towelie.options import CommentOutputMode, DiffSide, DiffStyle
+from towelie.options import CommentOutputMode, DefaultCommit, DiffSide, DiffStyle
 
 ALL_CHANGES = "__all__"
 UNCOMMITTED = "__uncommitted__"
@@ -47,6 +47,7 @@ class DiffOptionsPayload(BaseModel):
 class AppOptionsPayload(BaseModel):
     prompt: PromptOptionsPayload
     diff: DiffOptionsPayload
+    default_commit: DefaultCommit = DefaultCommit.ALL_CHANGES
 
 
 class ParsedCheck(BaseModel):

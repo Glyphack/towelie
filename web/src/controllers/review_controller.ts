@@ -99,7 +99,7 @@ function formatLineNumberComment(comment: CommentRecord): string {
     selection.startLine === selection.endLine
       ? `${selection.startLine}`
       : `${selection.startLine}-${selection.endLine}`;
-  return `${selection.fileName} lines ${lineLabel} on the ${sideLabel}\n\n\`\`\`\n${comment.text}\n\`\`\``;
+  return `<comment>\n  <location file="${selection.fileName}" lines="${lineLabel}" side="${sideLabel}" />\n  <text>${comment.text}</text>\n</comment>`;
 }
 
 async function formatSelectedLinesComment(
@@ -109,8 +109,16 @@ async function formatSelectedLinesComment(
   const { fileName, startLine, endLine, diffSide } = comment.selection;
   try {
     const lines = await getSourceLines(ref, fileName, startLine, endLine, diffSide);
-    const header = formatLineNumberComment(comment).split("\n\n```")[0];
-    return `${header}\n\n\`\`\`\n${lines}\n\`\`\`\n\n\`\`\`\n${comment.text}\n\`\`\``;
+    const selection = comment.selection;
+    const sideLabel =
+      selection.diffSide === "old"
+        ? "old code (before the change)"
+        : "new code (after the change)";
+    const lineLabel =
+      selection.startLine === selection.endLine
+        ? `${selection.startLine}`
+        : `${selection.startLine}-${selection.endLine}`;
+    return `<comment>\n  <location file="${fileName}" lines="${lineLabel}" side="${sideLabel}" />\n  <source_lines>${lines}</source_lines>\n  <text>${comment.text}</text>\n</comment>`;
   } catch {
     return formatLineNumberComment(comment);
   }
@@ -522,11 +530,11 @@ export default class ReviewController extends Controller {
       branchComments.map((c) => formatCommentBlock(c, outputMode, this.currentRef)),
     );
 
-    let commentsBlock = blocks.join("\n\n---\n\n");
+    let commentsBlock = blocks.join("\n\n");
     if (overallNotes) {
       commentsBlock = commentsBlock
-        ? `Overall notes:\n${overallNotes}\n\n---\n\n${commentsBlock}`
-        : `Overall notes:\n${overallNotes}`;
+        ? `<overall_notes>${overallNotes}</overall_notes>\n\n${commentsBlock}`
+        : `<overall_notes>${overallNotes}</overall_notes>`;
     }
 
     const commitRef = new CommitRef(selectedCommit);

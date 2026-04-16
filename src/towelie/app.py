@@ -499,12 +499,16 @@ def build_page_context(request: Request) -> dict:
 
 @app.get("/")
 async def index_page(request: Request):
-    return templates.TemplateResponse("index.html", build_page_context(request))
+    return templates.TemplateResponse(
+        request, "index.html", build_page_context(request)
+    )
 
 
 @app.get("/options")
 async def options_page(request: Request):
-    return templates.TemplateResponse("options.html", build_page_context(request))
+    return templates.TemplateResponse(
+        request, "options.html", build_page_context(request)
+    )
 
 
 @app.get("/api/info", response_model=ProjectInfoResponse)

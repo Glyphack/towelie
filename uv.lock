@@ -368,7 +368,7 @@ wheels = [
 
 [[package]]
 name = "towelie"
-version = "0.1.10"
+version = "0.1.11"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -387,10 +387,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.128.3" },
-    { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "tree-sitter", specifier = ">=0.22.3" },
-    { name = "uvicorn", specifier = ">=0.40.0" },
+    { name = "fastapi", specifier = "~=0.128" },
+    { name = "jinja2", specifier = "~=3.1" },
+    { name = "tree-sitter", specifier = "~=0.22" },
+    { name = "uvicorn", specifier = "~=0.40" },
 ]
 
 [package.metadata.requires-dev]

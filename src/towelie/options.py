@@ -22,8 +22,10 @@ DEFAULT_PROMPT_TEMPLATE = (
     "run git diff {{commit_ref}} on branch {{branch}} to get the full diff.</note>\n"
     "</review_context>\n\n"
     "<review_comments>\n"
-    "<note>Each comment indicates whether it is on the new code (after the change) or the old code (before the change). "
-    "Comments on old code point to something that was removed or existed before — use git diff to understand the context.</note>\n\n"
+    "<note>Each comment indicates whether it is on the new code (after the change) "
+    "or the old code (before the change). "
+    "Comments on old code point to something that was removed or existed before "
+    "— use git diff to understand the context.</note>\n\n"
     "{{comments}}\n"
     "</review_comments>\n"
     "</prompt>"
@@ -74,11 +76,11 @@ class AppOptions(BaseModel):
     default_commit: DefaultCommit = DefaultCommit.ALL_CHANGES
 
     @classmethod
-    def defaults(cls) -> "AppOptions":
+    def defaults(cls) -> AppOptions:
         return cls()
 
     @classmethod
-    def from_raw(cls, data: object) -> "AppOptions":
+    def from_raw(cls, data: object) -> AppOptions:
         defaults = cls.defaults()
         if not isinstance(data, dict):
             return defaults

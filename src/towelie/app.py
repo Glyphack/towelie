@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
 import sys
@@ -23,6 +24,7 @@ from towelie.models import (
     CommitRef,
     Diff,
     DiffResponse,
+    FileDiff,
     IndexRef,
     ParsedCheck,
     ProjectInfoResponse,
@@ -40,6 +42,7 @@ from towelie.options import (
 )
 
 dev_mode = os.environ.get("TOWELIE_DEV") == "1"
+logger = logging.getLogger(__name__)
 
 
 def _log_cmd(cmd):
@@ -391,6 +394,142 @@ class Project:
             return CheckResult(status=CheckStatus.PASS, output=output)
         return CheckResult(status=CheckStatus.FAIL, output=output, error=error)
 
+    async def get_branch_info(self) -> tuple[list[str], str, str]:
+        """Return (branch_names, current_branch, base_branch)."""
+        base, current, names = await asyncio.gather(
+            self.get_base_branch(),
+            self.get_current_branch(),
+            self.get_branches(),
+        )
+        return names, current, base
+
+    async def get_info(self) -> ProjectInfoResponse:
+        base = await self.get_base_branch()
+        branch_names = await self.get_branches()
+        current = await self.get_current_branch()
+        all_commits = await asyncio.gather(
+            *(self.get_commits(name, base) for name in branch_names)
+        )
+        branches = [
+            Branch(name=n, commits=c)
+            for n, c in zip(branch_names, all_commits, strict=True)
+        ]
+        return ProjectInfoResponse(
+            project_name=self.git_root.name,
+            origin=await self.get_origin(),
+            current_branch=current,
+            base_branch=base,
+            branches=branches,
+        )
+
+    async def read_file(self, file_path: str, ref: str | None = None) -> str:
+        if ref is None:
+            return (self.git_root / file_path).read_text()
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "show",
+            f"{ref}:{file_path}",
+            cwd=self.git_root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return ""
+        return stdout.decode()
+
+    async def build_file_diffs_for_ref(
+        self, project_ref: ProjectRef
+    ) -> list[FileDiff]:
+        current_branch = await self.get_current_branch()
+        effective_branch = project_ref.branch or current_branch
+        effective_base = project_ref.base or await self.get_base_branch()
+        is_current = effective_branch == current_branch
+        commit = project_ref.commit
+
+        logger.info(
+            "Building diffs: branch=%s, base=%s, commit=%s, is_current=%s",
+            effective_branch,
+            effective_base,
+            commit or "(all)",
+            is_current,
+        )
+
+        if commit == UNCOMMITTED:
+            result = await self.get_uncommitted_diff()
+        elif commit == STAGED:
+            result = await self.get_staged_diff()
+        elif commit == UNSTAGED:
+            result = await self.get_unstaged_diff()
+        elif not commit or commit == ALL_CHANGES:
+            result = await self.get_branch_diff(effective_branch, effective_base)
+        else:
+            result = await self.get_commit_diff(commit)
+
+        logger.info("Found %d changed files", len(result.files))
+
+        merge_base: str | None = None
+        if not commit or commit == ALL_CHANGES:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "merge-base",
+                effective_base,
+                effective_branch,
+                cwd=self.git_root,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            mb_out, _ = await proc.communicate()
+            merge_base = (
+                mb_out.decode().strip()
+                if proc.returncode == 0
+                else effective_base
+            )
+
+        async def _fetch_pair(f: str) -> FileDiff | None:
+            if commit == UNCOMMITTED:
+                old, new = await asyncio.gather(
+                    self.read_file(f, "HEAD"),
+                    self.read_file(f),
+                )
+            elif commit == STAGED:
+                old, new = await asyncio.gather(
+                    self.read_file(f, "HEAD"),
+                    self.read_file(f, ":0"),
+                )
+            elif commit == UNSTAGED:
+                old, new = await asyncio.gather(
+                    self.read_file(f, ":0"),
+                    self.read_file(f),
+                )
+            elif not commit or commit == ALL_CHANGES:
+                if merge_base is None:
+                    msg = "merge_base must be set for ALL_CHANGES"
+                    raise RuntimeError(msg)
+                if is_current:
+                    old, new = await asyncio.gather(
+                        self.read_file(f, merge_base),
+                        self.read_file(f),
+                    )
+                else:
+                    old, new = await asyncio.gather(
+                        self.read_file(f, merge_base),
+                        self.read_file(f, effective_branch),
+                    )
+            else:
+                old, new = await asyncio.gather(
+                    self.read_file(f, f"{commit}^"),
+                    self.read_file(f, commit),
+                )
+            if old != new:
+                return FileDiff(file_path=f, old_content=old, new_content=new)
+            return None
+
+        results = await asyncio.gather(*(_fetch_pair(f) for f in result.files))
+        diffs = [d for d in results if d is not None]
+        diffs.sort(key=lambda d: d.file_path)
+        return diffs
+
 
 @dataclass
 class CheckResult:
@@ -471,8 +610,8 @@ def parse_check_output(raw: CheckResult) -> list[ParsedCheck]:
         return []
 
     results: list[ParsedCheck] = []
-    for line in raw.output.splitlines():
-        line = line.strip()
+    for raw_line in raw.output.splitlines():
+        line = raw_line.strip()
         if not line or "." not in line:
             continue
 
@@ -513,19 +652,7 @@ async def options_page(request: Request):
 
 @app.get("/api/info", response_model=ProjectInfoResponse)
 async def get_info():
-    base = str(await APP_CONTEXT.project.get_base_branch())
-    branches = []
-    for branch in await APP_CONTEXT.project.get_branches():
-        commits = await APP_CONTEXT.project.get_commits(branch, base)
-        branches.append(Branch(name=branch, commits=commits))
-
-    return ProjectInfoResponse(
-        project_name=APP_CONTEXT.project.git_root.name,
-        origin=await APP_CONTEXT.project.get_origin(),
-        current_branch=await APP_CONTEXT.project.get_current_branch(),
-        base_branch=base,
-        branches=branches,
-    )
+    return await APP_CONTEXT.project.get_info()
 
 
 @app.get("/api/options")
@@ -564,7 +691,10 @@ async def diff(
     if commit in (UNCOMMITTED, STAGED, UNSTAGED) and not is_current_branch:
         raise HTTPException(
             status_code=400,
-            detail="Staged/unstaged/uncommitted filters are only available for the current branch",
+            detail=(
+                "Staged/unstaged/uncommitted filters are only"
+                " available for the current branch"
+            ),
         )
     elif commit == UNCOMMITTED:
         result = await APP_CONTEXT.project.get_uncommitted_diff()
@@ -604,3 +734,16 @@ async def checks() -> ChecksResponse:
         error=results.error,
     )
     return response
+
+
+def build_initial_file_diffs(
+    path: Path | None = None,
+) -> tuple[Project, list[FileDiff]]:
+    async def _build():
+        root = await get_git_root()
+        project = Project(git_root=root)
+        ref = ProjectRef(branch="", base="", commit=UNCOMMITTED)
+        diffs = await project.build_file_diffs_for_ref(ref)
+        return project, diffs
+
+    return asyncio.run(_build())

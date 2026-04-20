@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
@@ -26,26 +27,26 @@ from textual_diff_view._diff_view import (
     LineAnnotations,
 )
 
-from towelie.app import Project, build_initial_file_diffs
+from towelie.project import Project, TowelieContext
 from towelie.models import (
-    UNCOMMITTED,
-    CommentRecord,
+    Branch,
+    Comment,
+    CommitRef,
     FileDiff,
-    ProjectRef,
+    ReviewSelection,
     Review,
     Selection,
     SelectionState,
-    build_review_prompt,
+    SyntheticRef,
+    parse_ref,
 )
 from towelie.options import (
-    AppOptions,
     DiffSide,
     DiffStyle,
-    OptionsStore,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     from textual import events
 
@@ -133,14 +134,18 @@ def _safe_id(path: str) -> str:
 class DiffFileTree(DirectoryTree):
     def __init__(self, path: str | Path, diff_paths: list[str], **kwargs) -> None:
         super().__init__(path, **kwargs)
-        root = Path(path).resolve()
+        self._root = Path(path).resolve()
         self._allowed: set[Path] = set()
+        self.set_diff_paths(diff_paths)
+
+    def set_diff_paths(self, diff_paths: list[str]) -> None:
+        self._allowed.clear()
         for rel in diff_paths:
-            abs_path = (root / rel).resolve()
+            abs_path = (self._root / rel).resolve()
             self._allowed.add(abs_path)
             for parent in abs_path.parents:
                 self._allowed.add(parent)
-                if parent == root:
+                if parent == self._root:
                     break
 
     def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
@@ -172,16 +177,29 @@ Comments support **Markdown** formatting.
 """
 
 
-def _build_help_line(bindings: list[tuple[str, str, str]]) -> str:
+def _unpack_binding(b: BindingType) -> tuple[str, str]:
+    """Extract (key, description) from any BindingType variant."""
+    if isinstance(b, Binding):
+        return b.key, b.description
+    match b:
+        case key, _, desc:
+            return key, desc
+        case _:
+            return b[0], ""
+
+
+def _build_help_line(bindings: Sequence[BindingType]) -> str:
     parts = ["Click line numbers to select"]
-    for key, _action, desc in bindings:
+    for b in bindings:
+        key, desc = _unpack_binding(b)
         parts.append(f"{_KEY_DISPLAY.get(key, key)} {desc.lower()}")
     return "  |  ".join(parts)
 
 
-def _build_help_md(bindings: list[tuple[str, str, str]]) -> str:
+def _build_help_md(bindings: Sequence[BindingType]) -> str:
     lines = ["# Keybindings", "", "| Key | Action |", "|-----|--------|"]
-    for key, _action, desc in bindings:
+    for b in bindings:
+        key, desc = _unpack_binding(b)
         display = _KEY_DISPLAY.get(key, key)
         lines.append(f"| **{display}** | {desc} |")
     return "\n".join(lines) + _HELP_MD_FOOTER
@@ -199,7 +217,7 @@ class HelpScreen(ModalScreen[None]):
 
     BINDINGS = [("escape", "close", "Close"), ("question_mark", "close", "Close")]
 
-    def __init__(self, app_bindings: list[tuple[str, str, str]]) -> None:
+    def __init__(self, app_bindings: Sequence[BindingType]) -> None:
         super().__init__()
         self._help_md = _build_help_md(app_bindings)
 
@@ -292,7 +310,7 @@ class CommentScreen(TextInputModal):
     def __init__(self, selection: Selection) -> None:
         super().__init__(
             title="Add Comment",
-            label=f"Comment on {selection.format_loc()}",
+            label=f"Comment on {selection.format()}",
         )
 
 
@@ -312,7 +330,7 @@ class SubmitReviewScreen(TextInputModal):
         self.query_one("#submit-btn", Button).focus()
 
 
-class RefSelectScreen(ModalScreen[ProjectRef | None]):
+class RefSelectScreen(ModalScreen[ReviewSelection | None]):
     CSS = """
     #ref-dialog {
         width: 72;
@@ -343,89 +361,83 @@ class RefSelectScreen(ModalScreen[ProjectRef | None]):
 
     BINDINGS = [("escape", "cancel", "Cancel")]
 
-    def __init__(self, project: Project, default_commit: str = "") -> None:
+    def __init__(self, project: Project, review: Review) -> None:
         super().__init__()
         self._project = project
-        self._default_commit = default_commit
+        self._review = review
 
     def compose(self) -> ComposeResult:
         with Vertical(id="ref-dialog"):
             yield Static("Base branch", classes="label")
-            yield Select([], allow_blank=True, id="base-select")
+            yield Select[str]([], allow_blank=False, id="base-select")
             yield Static("Branch", classes="label")
-            yield Select([], allow_blank=True, id="branch-select")
+            yield Select[str]([], allow_blank=False, id="branch-select")
             yield Static("Commit", classes="label")
-            yield Select([], allow_blank=True, id="commit-select")
+            yield Select[str]([], allow_blank=False, id="commit-select")
             with Horizontal(classes="buttons"):
                 yield Button("Load", variant="primary", id="load-btn")
                 yield Button("Cancel", id="cancel-btn")
 
-    async def on_mount(self) -> None:
+    def on_mount(self) -> None:
         self.styles.align = ("center", "middle")
-        self.run_worker(self._load_data())
+        self.run_worker(self._populate())
 
-    async def _load_data(self) -> None:
-        (
-            branch_names,
-            current_branch,
-            base_branch,
-        ) = await self._project.get_branch_info()
+    async def _populate(self) -> None:
+        info = await self._project.get_info()
+        sel = self._review.review_selection
 
-        all_branch_options: list[tuple[str, str]] = [(b, b) for b in branch_names]
+        all_branch_options = [(b.name, b.name) for b in info.branches]
+        branch_options: list[tuple[str, str]] = []
+        for b in info.branches:
+            if b.name == info.current_branch:
+                branch_options.insert(0, (f"{b.name} (current)", b.name))
+            else:
+                branch_options.append((b.name, b.name))
+
         base_select = self.query_one("#base-select", Select)
         base_select.set_options(all_branch_options)
-        base_select.value = base_branch
+        base_select.value = sel.base
 
-        branch_options: list[tuple[str, str]] = []
-        for name in branch_names:
-            if name == current_branch:
-                branch_options.insert(0, (f"{name} (current)", name))
-            else:
-                branch_options.append((name, name))
         branch_select = self.query_one("#branch-select", Select)
         branch_select.set_options(branch_options)
-        branch_select.value = current_branch
+        branch_select.value = sel.branch
 
-        await self._load_commits(current_branch, base_branch)
+        await self._load_commits(sel.branch, sel.base)
 
-    async def _load_commits(self, branch: str, base: str) -> None:
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id in ("branch-select", "base-select"):
+            branch_val = Branch(str(self.query_one("#branch-select", Select).value))
+            base_val = Branch(str(self.query_one("#base-select", Select).value))
+            self.run_worker(
+                self._load_commits(branch_val, base_val),
+                group="load-commits",
+                exclusive=True,
+            )
+
+    async def _load_commits(self, branch: Branch, base: Branch) -> None:
         commits = await self._project.get_commits(branch, base)
-        commit_options = [(c.label, c.hash) for c in commits]
+        commit_options = [
+            (c.label, c.ref.sha if isinstance(c.ref, CommitRef) else c.ref.value)
+            for c in commits
+        ]
         commit_select = self.query_one("#commit-select", Select)
         commit_select.set_options(commit_options)
-
-        for _label, val in commit_options:
-            if val == self._default_commit:
-                commit_select.value = val
-                return
         if commit_options:
             commit_select.value = commit_options[0][1]
 
-    def on_select_changed(self, event: Select.Changed) -> None:
-        if (
-            event.select.id in ("branch-select", "base-select")
-            and event.value != Select.BLANK
-        ):
-            branch_val = self.query_one("#branch-select", Select).value
-            base_val = self.query_one("#base-select", Select).value
-            if branch_val != Select.BLANK and base_val != Select.BLANK:
-                self.run_worker(
-                    self._load_commits(str(branch_val), str(base_val)),
-                    group="load-commits",
-                    exclusive=True,
-                )
-
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "load-btn":
-            branch_val = self.query_one("#branch-select", Select).value
-            base_val = self.query_one("#base-select", Select).value
-            commit_val = self.query_one("#commit-select", Select).value
-
-            branch = str(branch_val) if branch_val != Select.BLANK else ""
-            base = str(base_val) if base_val != Select.BLANK else ""
-            commit = str(commit_val) if commit_val != Select.BLANK else ""
-
-            self.dismiss(ProjectRef(branch=branch, base=base, commit=commit))
+            branch = str(self.query_one("#branch-select", Select).value)
+            base = str(self.query_one("#base-select", Select).value)
+            commit_str = str(self.query_one("#commit-select", Select).value)
+            ref = parse_ref(commit_str) if commit_str else SyntheticRef.ALL_CHANGES
+            self.dismiss(
+                ReviewSelection(
+                    branch=Branch(branch),
+                    base=Branch(base),
+                    ref=ref,
+                )
+            )
         else:
             self.dismiss(None)
 
@@ -503,27 +515,27 @@ class TowelieApp(App):
         ("R", "reload_diff", "Reload"),
     ]
 
-    def __init__(self, file_diffs: list[FileDiff], *, project: Project) -> None:
+    def __init__(self, context: TowelieContext) -> None:
         super().__init__()
-        self.file_diffs = file_diffs
-        self.project = project
-        self.options: AppOptions = OptionsStore().load()
+        self.ctx = context
+        self.options = context.options_store.load()
+        self.project = context.project
         self.selection_state = SelectionState()
-        self.comments: list[CommentRecord] = []
-        self._current_ref = ProjectRef(branch="", base="", commit=UNCOMMITTED)
+        self.review: Review | None = None
         self._help_line = _build_help_line(self.BINDINGS)
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="main-layout"):
-            with Vertical(id="sidebar", classes="-hidden"):
+            with Vertical(id="sidebar"):
                 yield DiffFileTree(
                     self.project.git_root,
-                    [fd.file_path for fd in self.file_diffs],
+                    [],
                     id="file-tree",
                 )
             yield VerticalScroll(id="diff-scroll")
-        with Vertical(id="debug-panel"):
+        debug_classes = "" if self.ctx.dev_mode() else "-hidden"
+        with Vertical(id="debug-panel", classes=debug_classes):
             yield Static("Debug Log", id="debug-title")
             yield RichLog(id="debug-log", wrap=True, markup=True)
         yield Static(self._help_line, id="status-bar")
@@ -531,39 +543,14 @@ class TowelieApp(App):
     async def on_mount(self) -> None:
         log_widget = self.query_one("#debug-log", RichLog)
         _tui_handler.attach(log_widget)
-        logger.info(
-            "TUI started \u2014 project=%s, files=%d",
-            self.project.git_root,
-            len(self.file_diffs),
+        info = await self.project.get_info()
+        selection = ReviewSelection(
+            info.current_branch,
+            info.base_branch,
+            parse_ref(self.options.default_commit),
         )
-        if self.file_diffs:
-            await self._mount_diff_views(self.file_diffs)
-        else:
-            self.notify(
-                "No uncommitted changes found. Press r to select a branch/commit.",
-                timeout=8,
-            )
-
-    async def _mount_diff_views(self, file_diffs: list[FileDiff]) -> None:
-        use_split = self.options.diff.style == DiffStyle.TWO_SIDES
-        scroll = self.query_one("#diff-scroll", VerticalScroll)
-
-        # Sort the files in the same order we show them in DirectoryTree
-        def _sort_key(fd: FileDiff) -> tuple:
-            # Order directories before files at each level.
-            parts = Path(fd.file_path).parts
-            return (*((0, p.lower()) for p in parts[:-1]), (1, parts[-1].lower()))
-
-        for fd in sorted(file_diffs, key=_sort_key):
-            dv = DiffView(
-                fd.file_path,
-                fd.file_path,
-                fd.old_content,
-                fd.new_content,
-                split=use_split,
-                id=_safe_id(fd.file_path),
-            )
-            await scroll.mount(dv)
+        self.review = Review(review_selection=selection)
+        await self._reload_diffs(selection)
 
     def on_annotation_clicked(self, message: AnnotationClicked) -> None:
         widget = message.annotation_widget
@@ -599,6 +586,8 @@ class TowelieApp(App):
 
         self.selection_state.select(file_name, side, line_number)
         self._update_status()
+        if isinstance(self.selection_state, SelectionState.Complete):
+            self.action_add_comment()
 
     def _update_status(self) -> None:
         selection = self.selection_state.to_selection()
@@ -607,7 +596,7 @@ class TowelieApp(App):
             status.update(self._help_line)
             return
 
-        loc = selection.format_loc()
+        loc = selection.format()
         if self.selection_state.is_selecting:
             status.update(
                 f"Selecting: {loc}  \u2014 click another line to complete range"
@@ -637,34 +626,30 @@ class TowelieApp(App):
         dv.scroll_visible(animate=True)
 
     def action_submit_review(self) -> None:
-        if not self.comments:
+        if self.review is None or not self.review.comments:
             self.notify("No comments to submit", severity="warning")
             return
         self.push_screen(
-            SubmitReviewScreen(len(self.comments)),
+            SubmitReviewScreen(len(self.review.comments)),
             self._on_submit_review_result,
         )
 
-    def _on_submit_review_result(self, notes: str | None) -> None:
-        if notes is None:
+    def _on_submit_review_result(self, review_text: str | None) -> None:
+        if review_text is None:
             return
 
-        review = Review(
-            comments=list(self.comments),
-            notes=notes,
-        )
-        review_text = build_review_prompt(
-            review,
+        assert self.review is not None
+        review_text = self.review.build_prompt(
             self.options.prompt.template,
             self.options.prompt.comment_output_mode,
+            review_text,
         )
 
         self.copy_to_clipboard(review_text)
-        self.comments.clear()
+        self.review = Review(self.review.review_selection)
         self.selection_state.clear()
         self._update_status()
         self.notify("Review copied to clipboard!")
-        logger.info("Review with %d comments copied to clipboard", len(review.comments))
 
     def action_add_comment(self) -> None:
         selection = self.selection_state.start_commenting()
@@ -685,8 +670,8 @@ class TowelieApp(App):
         if selection is None:
             self.notify("Selection lost during commenting", severity="error")
             return
-        comment = CommentRecord(selection=selection, text=text)
-        self.comments.append(comment)
+        assert self.review is not None
+        self.review.add_comment(Comment(selection=selection, text=text))
         self.selection_state.clear()
         self._update_status()
 
@@ -699,62 +684,70 @@ class TowelieApp(App):
             dv.annotations = not dv.annotations
 
     def action_select_ref(self) -> None:
+        assert self.review
         self.push_screen(
-            RefSelectScreen(self.project, self.options.default_commit),
-            self._on_ref_selected,
+            RefSelectScreen(self.project, self.review), self._on_ref_selected
         )
 
-    def _on_ref_selected(self, result: ProjectRef | None) -> None:
+    def _on_ref_selected(self, result: ReviewSelection | None) -> None:
         if result is None:
             return
-        logger.info(
-            "Ref selected: branch=%s, base=%s, commit=%s",
+        logger.debug(
+            "Ref selected: branch=%s, base=%s, ref=%s",
             result.branch or "(current)",
             result.base or "(default)",
-            result.commit or "(all)",
+            result.ref,
         )
+        self.review = Review(review_selection=result)
         self.run_worker(self._reload_diffs(result))
 
     def action_reload_diff(self) -> None:
-        self.run_worker(self._reload_diffs(self._current_ref))
+        if self.review is not None:
+            self.run_worker(self._reload_diffs(self.review.review_selection))
 
-    async def _reload_diffs(self, project_ref: ProjectRef) -> None:
+    async def _reload_diffs(self, project_ref: ReviewSelection) -> None:
         """Fetch diffs for the selected ref and replace all DiffViews."""
-        self._current_ref = project_ref
         logger.info("Loading diff for ref: %s", project_ref)
         self.notify("Loading diff\u2026")
-        file_diffs = await self.project.build_file_diffs_for_ref(project_ref)
+        diff = await self.project.compute_diff_result(project_ref)
 
-        if not file_diffs:
-            logger.info("No changes found for selection")
+        if not diff.file_diffs:
             self.notify("No changes found for this selection", severity="warning")
             return
 
-        logger.info("Loaded %d file diffs", len(file_diffs))
+        logger.info("Loaded %d file diffs", len(diff.file_diffs))
 
-        self.file_diffs = file_diffs
-        self.comments.clear()
+        if self.review is not None:
+            self.review.comments.clear()
         self.selection_state.clear()
 
+        file_tree = self.query_one("#file-tree", DiffFileTree)
+        file_tree.set_diff_paths([fd.file_path for fd in diff.file_diffs])
+        file_tree.reload()
+
+        use_split = self.options.diff.style == DiffStyle.TWO_SIDES
         scroll = self.query_one("#diff-scroll", VerticalScroll)
         await scroll.remove_children()
-        await self._mount_diff_views(self.file_diffs)
 
-        old_tree = self.query_one("#file-tree", DiffFileTree)
-        sidebar = self.query_one("#sidebar")
-        await old_tree.remove()
-        new_tree = DiffFileTree(
-            self.project.git_root,
-            [fd.file_path for fd in self.file_diffs],
-            id="file-tree",
-        )
-        await sidebar.mount(new_tree)
+        def _sort_key(fd: FileDiff) -> tuple:
+            parts = Path(fd.file_path).parts
+            return (*((0, p.lower()) for p in parts[:-1]), (1, parts[-1].lower()))
+
+        for fd in sorted(diff.file_diffs, key=_sort_key):
+            dv = DiffView(
+                fd.file_path,
+                fd.file_path,
+                fd.old_content,
+                fd.new_content,
+                split=use_split,
+                id=_safe_id(fd.file_path),
+            )
+            await scroll.mount(dv)
 
         self._update_status()
 
 
-def run_tui(path: str | None = None) -> None:
-    repo_path = Path(path) if path else None
-    project, file_diffs = build_initial_file_diffs(repo_path)
-    app = TowelieApp(file_diffs, project=project)
-    app.run()
+async def run_tui() -> None:
+    tc = await TowelieContext.new()
+    app = TowelieApp(tc)
+    await app.run_async()

@@ -29,10 +29,11 @@ dev = [
     "pyright>=1.1.408",
     "pytest>=9.0.2",
     "ruff>=0.11",
+    "ty>=0.0.31",
 ]
 
 [tool.pyright]
-ignore = ["scratch/"]
+ignore = ["scratch/", "dist/"]
 
 [tool.ruff]
 target-version = "py313"

@@ -1,7 +1,13 @@
 import { Controller } from "@hotwired/stimulus";
 import { Diff2HtmlUI } from "diff2html/lib/ui/js/diff2html-ui.js";
-import { getDiff, getInfo, getOptions, getSourceLines, type ProjectRef } from "../api";
-import { type CommentOutputMode, type DefaultCommit, type DiffSide } from "../options";
+import {
+  getDiff,
+  getInfo,
+  getOptions,
+  getSourceLines,
+  type ProjectRef,
+} from "../api";
+import { type CommentOutputMode, type DiffSide } from "../options";
 
 type FileStatus = "M" | "A" | "D";
 
@@ -61,14 +67,13 @@ interface PromptTemplateValues {
   branch: string;
   comment_count: string;
   commit_ref: string;
-  commit_sha: string;
   review_scope: string;
 }
 
-const ALL_CHANGES = "__all__";
-const STAGED = "__staged__";
-const UNSTAGED = "__unstaged__";
-const UNCOMMITTED = "__uncommitted__";
+const ALL_CHANGES = "all_changes";
+const STAGED = "staged";
+const UNSTAGED = "unstaged";
+const UNCOMMITTED = "uncommitted";
 
 function applyPromptTemplate(
   template: string,
@@ -83,8 +88,6 @@ function applyPromptTemplate(
     .join(values.comment_count)
     .split("{{commit_ref}}")
     .join(values.commit_ref)
-    .split("{{commit_sha}}")
-    .join(values.commit_sha)
     .split("{{review_scope}}")
     .join(values.review_scope);
 }
@@ -108,7 +111,13 @@ async function formatSelectedLinesComment(
 ): Promise<string> {
   const { fileName, startLine, endLine, diffSide } = comment.selection;
   try {
-    const lines = await getSourceLines(ref, fileName, startLine, endLine, diffSide);
+    const lines = await getSourceLines(
+      ref,
+      fileName,
+      startLine,
+      endLine,
+      diffSide,
+    );
     const selection = comment.selection;
     const sideLabel =
       selection.diffSide === "old"
@@ -129,7 +138,8 @@ async function formatCommentBlock(
   mode: CommentOutputMode,
   ref: ProjectRef,
 ): Promise<string> {
-  if (mode === "selected_lines") return formatSelectedLinesComment(comment, ref);
+  if (mode === "selected_lines")
+    return formatSelectedLinesComment(comment, ref);
   return formatLineNumberComment(comment);
 }
 
@@ -392,7 +402,7 @@ export default class ReviewController extends Controller {
     this.closePanel();
     this.clearSelectionHighlight();
 
-    const branch = this.branchSelectTarget.value;
+    const branch = this.branchSelectTarget.value || this.currentBranchName;
     const base = this.baseBranchSelectTarget.value;
     const commit = this.commitSelectTarget.value;
     this.currentRef = { branch, base, commit };
@@ -450,8 +460,21 @@ export default class ReviewController extends Controller {
       option.textContent = branchName;
       branchSelect.appendChild(option);
     });
-    branchSelect.value =
-      savedBranch && branchNames.includes(savedBranch) ? savedBranch : "";
+    const reviewSelection = info.review_selection;
+
+    if (savedBranch && branchNames.includes(savedBranch)) {
+      branchSelect.value = savedBranch;
+    } else if (
+      reviewSelection.branch &&
+      branchNames.includes(reviewSelection.branch)
+    ) {
+      branchSelect.value =
+        reviewSelection.branch === info.current_branch
+          ? ""
+          : reviewSelection.branch;
+    } else {
+      branchSelect.value = "";
+    }
 
     baseBranchSelect.innerHTML = "";
     branchNames.forEach((branchName) => {
@@ -463,6 +486,11 @@ export default class ReviewController extends Controller {
 
     if (savedBase && branchNames.includes(savedBase)) {
       baseBranchSelect.value = savedBase;
+    } else if (
+      reviewSelection.base &&
+      branchNames.includes(reviewSelection.base)
+    ) {
+      baseBranchSelect.value = reviewSelection.base;
     } else {
       baseBranchSelect.value = info.base_branch;
     }
@@ -476,20 +504,25 @@ export default class ReviewController extends Controller {
     commitSelect.innerHTML = "";
     commits.forEach((commit) => {
       const option = document.createElement("option");
-      option.value = commit.hash;
+      option.value = commit.ref;
       option.textContent = commit.label;
       commitSelect.appendChild(option);
     });
 
-    const commitHashes = commits.map((c) => c.hash);
-    if (savedCommit && commitHashes.includes(savedCommit)) {
+    const commitRefs = commits.map((c) => c.ref);
+    if (savedCommit && commitRefs.includes(savedCommit)) {
       commitSelect.value = savedCommit;
+    } else if (
+      reviewSelection.commit &&
+      commitRefs.includes(reviewSelection.commit)
+    ) {
+      commitSelect.value = reviewSelection.commit;
     } else {
-      const defaultCommit = options.default_commit as DefaultCommit;
-      commitSelect.value = commitHashes.includes(defaultCommit)
+      const defaultCommit = options.default_commit;
+      commitSelect.value = commitRefs.includes(defaultCommit)
         ? defaultCommit
         : commits.length > 0
-          ? commits[0].hash
+          ? commits[0].ref
           : "";
     }
   }
@@ -528,7 +561,9 @@ export default class ReviewController extends Controller {
     const options = await getOptions();
     const outputMode = options.prompt.comment_output_mode;
     const blocks = await Promise.all(
-      branchComments.map((c) => formatCommentBlock(c, outputMode, this.currentRef)),
+      branchComments.map((c) =>
+        formatCommentBlock(c, outputMode, this.currentRef),
+      ),
     );
 
     let commentsBlock = blocks.join("\n\n");
@@ -549,7 +584,6 @@ export default class ReviewController extends Controller {
       branch: renderedBranch,
       comment_count: String(branchComments.length),
       commit_ref: commitRef.label,
-      commit_sha: commitRef.sha,
       review_scope: reviewScope,
     });
 

@@ -7,7 +7,7 @@ export interface ProjectRef {
 }
 
 export interface CommitInfo {
-  hash: string;
+  ref: string;
   label: string;
 }
 
@@ -74,8 +74,8 @@ export async function getDiff(ref: ProjectRef): Promise<DiffResponse> {
   const data = await parseJson(await fetch(url));
   return {
     diff: {
-      diff: data.diff.diff,
-      files: data.diff.files,
+      diff: data.diff,
+      files: data.files,
     },
   };
 }

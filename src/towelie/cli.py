@@ -1,3 +1,4 @@
+import asyncio
 import argparse
 import contextlib
 import os
@@ -72,7 +73,7 @@ def dev():
     print(f"\n  towelie → http://localhost:{port}\n")
     threading.Thread(target=open_when_ready, args=(port,), daemon=True).start()
     try:
-        uvicorn.run("towelie.app:app", host="127.0.0.1", port=port, reload=True)
+        uvicorn.run("towelie.api:app", host="127.0.0.1", port=port, reload=True)
     finally:
         stop_process(frontend_watch)
 
@@ -83,7 +84,7 @@ def run():
     port = find_available_port(4242)
     print(f"\n  towelie → http://localhost:{port}\n")
     threading.Thread(target=open_when_ready, args=(port,), daemon=True).start()
-    uvicorn.run("towelie.app:app", host="127.0.0.1", port=port)
+    uvicorn.run("towelie.api:app", host="127.0.0.1", port=port)
 
 
 def main():
@@ -101,6 +102,11 @@ def main():
         help="Run in TUI mode (terminal UI)",
     )
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Open the debug panel by default in TUI mode",
+    )
+    parser.add_argument(
         "path",
         nargs="?",
         default=None,
@@ -114,7 +120,7 @@ def main():
     if args.tui:
         from towelie.tui.app import run_tui
 
-        run_tui(args.path)
+        asyncio.run(run_tui())
     elif args.dev:
         dev()
     else:

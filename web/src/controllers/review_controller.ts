@@ -256,21 +256,8 @@ export default class ReviewController extends Controller {
       option.textContent = branchName;
       branchSelect.appendChild(option);
     });
-    const reviewSelection = info.review_selection;
-
-    if (savedBranch && branchNames.includes(savedBranch)) {
-      branchSelect.value = savedBranch;
-    } else if (
-      reviewSelection.branch &&
-      branchNames.includes(reviewSelection.branch)
-    ) {
-      branchSelect.value =
-        reviewSelection.branch === info.current_branch
-          ? ""
-          : reviewSelection.branch;
-    } else {
-      branchSelect.value = "";
-    }
+    branchSelect.value =
+      savedBranch && branchNames.includes(savedBranch) ? savedBranch : "";
 
     baseBranchSelect.innerHTML = "";
     branchNames.forEach((branchName) => {
@@ -282,11 +269,6 @@ export default class ReviewController extends Controller {
 
     if (savedBase && branchNames.includes(savedBase)) {
       baseBranchSelect.value = savedBase;
-    } else if (
-      reviewSelection.base &&
-      branchNames.includes(reviewSelection.base)
-    ) {
-      baseBranchSelect.value = reviewSelection.base;
     } else {
       baseBranchSelect.value = info.base_branch;
     }
@@ -308,11 +290,6 @@ export default class ReviewController extends Controller {
     const commitRefs = commits.map((c) => c.ref);
     if (savedCommit && commitRefs.includes(savedCommit)) {
       commitSelect.value = savedCommit;
-    } else if (
-      reviewSelection.commit &&
-      commitRefs.includes(reviewSelection.commit)
-    ) {
-      commitSelect.value = reviewSelection.commit;
     } else {
       const defaultCommit = options.default_commit;
       commitSelect.value = commitRefs.includes(defaultCommit)

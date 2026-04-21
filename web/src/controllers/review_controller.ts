@@ -1,5 +1,5 @@
 import { Controller } from "@hotwired/stimulus";
-import { Diff2HtmlUI } from "diff2html/lib/ui/js/diff2html-ui-slim.js";
+import { Diff2HtmlUI } from "diff2html/lib/ui/js/diff2html-ui.js";
 import { getDiff, getInfo, getOptions, getSourceLines, type ProjectRef } from "../api";
 import { type CommentOutputMode, type DefaultCommit, type DiffSide } from "../options";
 
@@ -414,6 +414,7 @@ export default class ReviewController extends Controller {
       diffMaxChanges: 50000,
     });
     diff2htmlUi.draw();
+    diff2htmlUi.highlightCode();
 
     const statusMap = parseFileStatuses(diff.diff.diff);
     this.fileEntries = this.collectFileEntries(statusMap, diff.diff.files);

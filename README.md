@@ -13,6 +13,10 @@ uvx towelie
 
 This starts a local server at `http://localhost:4242` and opens it in your browser.
 
+> [!NOTE]
+> There's also a nightly version that has the latest changes. It probably has bugs
+> `uvx --from git+https://github.com/glyphack/towelie.git@nightly towelie`
+
 ## Why Use Towelie?
 
 If you like to review code changes locally and not use Github.

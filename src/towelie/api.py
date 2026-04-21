@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -124,7 +124,8 @@ async def options_page(request: Request):
 
 
 @app.get("/api/options")
-async def get_options() -> AppOptions:
+async def get_options(response: Response) -> AppOptions:
+    response.headers["Cache-Control"] = "no-store"
     return APP_CONTEXT.options_store.load()
 
 

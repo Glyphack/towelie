@@ -1,4 +1,5 @@
 @import "tailwindcss" source(none);
+@import "highlight.js/styles/github.css";
 @import "diff2html/bundles/css/diff2html.min.css";
 @import "../../../web/src/comment.css";
 @source "../templates";

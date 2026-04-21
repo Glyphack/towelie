@@ -1,0 +1,38 @@
+name: Nightly Build
+
+on:
+  push:
+    branches: [master]
+
+concurrency:
+  group: nightly-build
+  cancel-in-progress: true
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Stamp nightly version
+        run: |
+          NIGHTLY_VERSION="$(uv version).dev$(date -u +%Y%m%d%H%M%S)"
+          uv version "$NIGHTLY_VERSION"
+
+      - name: Build frontend
+        run: bun run build
+
+      - name: Push to nightly branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B nightly
+          git add --force .
+          git commit -m "nightly: $(uv version) from $(git rev-parse --short HEAD)"
+          git push --force origin nightly

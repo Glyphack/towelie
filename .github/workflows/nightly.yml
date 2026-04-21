@@ -22,7 +22,7 @@ jobs:
 
       - name: Stamp nightly version
         run: |
-          NIGHTLY_VERSION="$(uv version).dev$(date -u +%Y%m%d%H%M%S)"
+          NIGHTLY_VERSION="$(uv version --short).dev$(date -u +%Y%m%d%H%M%S)"
           uv version "$NIGHTLY_VERSION"
 
       - name: Build frontend
@@ -34,5 +34,5 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B nightly
           git add --force .
-          git commit -m "nightly: $(uv version) from $(git rev-parse --short HEAD)"
+          git commit -m "nightly: $(uv version --short) from $(git rev-parse --short HEAD)"
           git push --force origin nightly

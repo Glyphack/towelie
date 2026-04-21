@@ -1,32 +1,21 @@
 import { Controller } from "@hotwired/stimulus";
 import { Diff2HtmlUI } from "diff2html/lib/ui/js/diff2html-ui.js";
 import {
+  addComment,
+  deleteComment,
+  getComments,
   getDiff,
   getInfo,
   getOptions,
-  getSourceLines,
+  submitReview,
+  updateComment,
+  type CommentRecord,
   type ProjectRef,
+  type Selection,
 } from "../api";
-import { type CommentOutputMode, type DiffSide } from "../options";
+import { type DiffSide } from "../options";
 
 type FileStatus = "M" | "A" | "D";
-
-interface Selection {
-  fileName: string;
-  startLine: number;
-  endLine: number;
-  diffSide: DiffSide;
-}
-
-interface CommentRecord {
-  id: string;
-  selection: Selection;
-  text: string;
-  branch: string;
-  author: "You";
-  createdAt: number;
-  updatedAt: number;
-}
 
 interface SelectionState {
   start: LineLocation | null;
@@ -62,105 +51,6 @@ interface FileTreeNode {
   files: FileEntry[];
 }
 
-interface PromptTemplateValues {
-  comments: string;
-  branch: string;
-  comment_count: string;
-  commit_ref: string;
-  review_scope: string;
-}
-
-const ALL_CHANGES = "all_changes";
-const STAGED = "staged";
-const UNSTAGED = "unstaged";
-const UNCOMMITTED = "uncommitted";
-
-function applyPromptTemplate(
-  template: string,
-  values: PromptTemplateValues,
-): string {
-  return template
-    .split("{{comments}}")
-    .join(values.comments)
-    .split("{{branch}}")
-    .join(values.branch)
-    .split("{{comment_count}}")
-    .join(values.comment_count)
-    .split("{{commit_ref}}")
-    .join(values.commit_ref)
-    .split("{{review_scope}}")
-    .join(values.review_scope);
-}
-
-function formatLineNumberComment(comment: CommentRecord): string {
-  const selection = comment.selection;
-  const sideLabel =
-    selection.diffSide === "old"
-      ? "old code (before the change)"
-      : "new code (after the change)";
-  const lineLabel =
-    selection.startLine === selection.endLine
-      ? `${selection.startLine}`
-      : `${selection.startLine}-${selection.endLine}`;
-  return `<comment>\n  <location file="${selection.fileName}" lines="${lineLabel}" side="${sideLabel}" />\n  <text>${comment.text}</text>\n</comment>`;
-}
-
-async function formatSelectedLinesComment(
-  comment: CommentRecord,
-  ref: ProjectRef,
-): Promise<string> {
-  const { fileName, startLine, endLine, diffSide } = comment.selection;
-  try {
-    const lines = await getSourceLines(
-      ref,
-      fileName,
-      startLine,
-      endLine,
-      diffSide,
-    );
-    const selection = comment.selection;
-    const sideLabel =
-      selection.diffSide === "old"
-        ? "old code (before the change)"
-        : "new code (after the change)";
-    const lineLabel =
-      selection.startLine === selection.endLine
-        ? `${selection.startLine}`
-        : `${selection.startLine}-${selection.endLine}`;
-    return `<comment>\n  <location file="${fileName}" lines="${lineLabel}" side="${sideLabel}" />\n  <source_lines>${lines}</source_lines>\n  <text>${comment.text}</text>\n</comment>`;
-  } catch {
-    return formatLineNumberComment(comment);
-  }
-}
-
-async function formatCommentBlock(
-  comment: CommentRecord,
-  mode: CommentOutputMode,
-  ref: ProjectRef,
-): Promise<string> {
-  if (mode === "selected_lines")
-    return formatSelectedLinesComment(comment, ref);
-  return formatLineNumberComment(comment);
-}
-
-class CommitRef {
-  constructor(readonly value: string) {}
-
-  get label(): string {
-    if (this.value === STAGED) return "staged changes";
-    if (this.value === UNSTAGED) return "unstaged changes";
-    if (this.value === UNCOMMITTED) return "uncommited changes";
-    if (!this.value || this.value === ALL_CHANGES) return "all changes";
-    return this.value;
-  }
-
-  get sha(): string {
-    if ([STAGED, UNSTAGED, UNCOMMITTED, ALL_CHANGES, ""].includes(this.value))
-      return "";
-    return this.value;
-  }
-}
-
 function flashButton(btn: HTMLButtonElement, message: string, ms: number) {
   const original = btn.textContent;
   btn.textContent = message;
@@ -169,97 +59,6 @@ function flashButton(btn: HTMLButtonElement, message: string, ms: number) {
     btn.textContent = original;
     btn.disabled = false;
   }, ms);
-}
-
-function makeId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-class CommentStorage {
-  private static KEY = "towelie-comments";
-  private comments: CommentRecord[] = [];
-
-  load() {
-    const stored = localStorage.getItem(CommentStorage.KEY);
-    if (!stored) {
-      this.comments = [];
-      return;
-    }
-
-    try {
-      const raw = JSON.parse(stored) as Array<Partial<CommentRecord>>;
-      const now = Date.now();
-      this.comments = raw
-        .filter(
-          (item): item is Partial<CommentRecord> & { selection: Selection } =>
-            Boolean(item?.selection && item.text && item.branch),
-        )
-        .map((item) => {
-          const createdAt =
-            typeof item.createdAt === "number" ? item.createdAt : now;
-          const updatedAt =
-            typeof item.updatedAt === "number" ? item.updatedAt : createdAt;
-          return {
-            id: typeof item.id === "string" ? item.id : makeId(),
-            selection: item.selection,
-            text: item.text ?? "",
-            branch: item.branch ?? "current",
-            author: "You",
-            createdAt,
-            updatedAt,
-          };
-        });
-      this.save();
-    } catch {
-      this.comments = [];
-      localStorage.removeItem(CommentStorage.KEY);
-    }
-  }
-
-  add(selection: Selection, text: string, branch: string): CommentRecord {
-    const now = Date.now();
-    const comment: CommentRecord = {
-      id: makeId(),
-      selection,
-      text,
-      branch,
-      author: "You",
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.comments.push(comment);
-    this.save();
-    return comment;
-  }
-
-  remove(id: string) {
-    this.comments = this.comments.filter((comment) => comment.id !== id);
-    this.save();
-  }
-
-  update(id: string, text: string) {
-    const comment = this.comments.find((entry) => entry.id === id);
-    if (!comment) return;
-    comment.text = text;
-    comment.updatedAt = Date.now();
-    comment.author = "You";
-    this.save();
-  }
-
-  forBranch(branch: string): CommentRecord[] {
-    return this.comments.filter((comment) => comment.branch === branch);
-  }
-
-  clearBranch(branch: string) {
-    this.comments = this.comments.filter(
-      (comment) => comment.branch !== branch,
-    );
-    this.save();
-  }
-
-  private save() {
-    localStorage.setItem(CommentStorage.KEY, JSON.stringify(this.comments));
-  }
 }
 
 function parseFileStatuses(diffText: string): Map<string, FileStatus> {
@@ -351,10 +150,9 @@ export default class ReviewController extends Controller {
   declare readonly commentCountTarget: HTMLElement;
   declare readonly submitNotesTarget: HTMLTextAreaElement;
 
-  private storage = new CommentStorage();
-  private currentProjectOrigin = "repo";
   private currentBranchName = "current";
   private currentRef: ProjectRef = { branch: "", base: "", commit: "" };
+  private comments: CommentRecord[] = [];
   private sidebarVisible = true;
   private fileEntries: FileEntry[] = [];
   private fileButtons = new Map<string, HTMLButtonElement>();
@@ -372,7 +170,6 @@ export default class ReviewController extends Controller {
   };
 
   async connect() {
-    this.storage.load();
     await this.reloadReview();
     this.outputTarget.addEventListener("mousedown", this.onMouseDown);
     this.outputTarget.addEventListener("mousemove", this.onMouseMove);
@@ -432,13 +229,12 @@ export default class ReviewController extends Controller {
 
     this.renderFileTree();
     this.normalizeDiffRows();
-    this.renderComments();
+    await this.renderComments();
     this.updateActiveFileFromScroll();
   }
 
   async populateInfo() {
     const [info, options] = await Promise.all([getInfo(), getOptions()]);
-    this.currentProjectOrigin = info.origin;
     this.currentBranchName = info.current_branch;
     const branchSelect = this.branchSelectTarget;
     const baseBranchSelect = this.baseBranchSelectTarget;
@@ -546,56 +342,17 @@ export default class ReviewController extends Controller {
 
   async finishReview(e: Event) {
     const btn = e.currentTarget as HTMLButtonElement;
-    const selectedBranch = this.branchSelectTarget.value;
-    const renderedBranch = selectedBranch || this.currentBranchName;
-    const storageScope = this.currentStorageScope();
-    const selectedCommit = this.commitSelectTarget.value;
-    const branchComments = this.storage.forBranch(storageScope);
     const overallNotes = this.submitNotesTarget.value.trim();
 
-    if (branchComments.length === 0 && !overallNotes) {
+    if (this.comments.length === 0 && !overallNotes) {
       flashButton(btn, "No comments to copy", 2000);
       return;
     }
 
-    const options = await getOptions();
-    const outputMode = options.prompt.comment_output_mode;
-    const blocks = await Promise.all(
-      branchComments.map((c) =>
-        formatCommentBlock(c, outputMode, this.currentRef),
-      ),
-    );
-
-    let commentsBlock = blocks.join("\n\n");
-    if (overallNotes) {
-      commentsBlock = commentsBlock
-        ? `<overall_notes>${overallNotes}</overall_notes>\n\n${commentsBlock}`
-        : `<overall_notes>${overallNotes}</overall_notes>`;
-    }
-
-    const commitRef = new CommitRef(selectedCommit);
-    const reviewScope = commitRef.sha
-      ? `This is a review on branch ${renderedBranch} with commit ${commitRef.sha}.`
-      : `This is a review on branch ${renderedBranch} with ${commitRef.label}.`;
-
-    const template = options.prompt.template;
-    let reviewText = applyPromptTemplate(template, {
-      comments: commentsBlock,
-      branch: renderedBranch,
-      comment_count: String(branchComments.length),
-      commit_ref: commitRef.label,
-      review_scope: reviewScope,
-    });
-
-    if (!template.includes("{{comments}}")) {
-      const trimmed = reviewText.trimEnd();
-      reviewText = trimmed ? `${trimmed}\n\n${commentsBlock}` : commentsBlock;
-    }
-
-    await navigator.clipboard.writeText(reviewText);
+    const result = await submitReview(overallNotes);
+    await navigator.clipboard.writeText(result.review_text);
     this.submitNotesTarget.value = "";
-    this.storage.clearBranch(storageScope);
-    this.renderComments();
+    await this.renderComments();
     flashButton(btn, "Copied to clipboard!", 2000);
   }
 
@@ -631,9 +388,8 @@ export default class ReviewController extends Controller {
     this.fileButtons.clear();
     this.fileExplorerTarget.innerHTML = "";
 
-    const comments = this.storage.forBranch(this.currentStorageScope());
     const commentedFiles = new Set(
-      comments.map((comment) => comment.selection.fileName),
+      this.comments.map((comment) => comment.selection.fileName),
     );
 
     const root: FileTreeNode = {
@@ -772,9 +528,9 @@ export default class ReviewController extends Controller {
     });
   }
 
-  private renderComments() {
-    const branch = this.currentStorageScope();
-    const comments = this.storage.forBranch(branch);
+  private async renderComments() {
+    this.comments = await getComments();
+    const comments = this.comments;
 
     this.commentCountTarget.textContent = `${comments.length} notes`;
     this.closePanel();
@@ -912,7 +668,7 @@ export default class ReviewController extends Controller {
       block.className = "towelie-comment-block";
       block.innerHTML = `
         <p class="towelie-comment-text"></p>
-        <div class="towelie-comment-meta">${comment.author} · lines ${lineLabel}</div>
+        <div class="towelie-comment-meta">You · lines ${lineLabel}</div>
       `;
       const textNode = block.querySelector<HTMLElement>(
         ".towelie-comment-text",
@@ -945,11 +701,11 @@ export default class ReviewController extends Controller {
         cancelBtn.className = "towelie-comment-cancel";
         cancelBtn.textContent = "Cancel";
 
-        saveBtn.addEventListener("click", () => {
+        saveBtn.addEventListener("click", async () => {
           const next = textarea.value.trim();
           if (!next) return;
-          this.storage.update(comment.id, next);
-          this.renderComments();
+          await updateComment(comment.id, next);
+          await this.renderComments();
           this.openSavedPanel(
             diffRow,
             location,
@@ -973,16 +729,16 @@ export default class ReviewController extends Controller {
         block.replaceChildren(editor);
       });
 
-      const deleteBtn = document.createElement("button");
-      deleteBtn.type = "button";
-      deleteBtn.className = "towelie-comment-action towelie-comment-delete";
-      deleteBtn.textContent = "Delete";
-      deleteBtn.addEventListener("click", () => {
-        this.storage.remove(comment.id);
-        this.renderComments();
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "towelie-comment-action towelie-comment-delete";
+      delBtn.textContent = "Delete";
+      delBtn.addEventListener("click", async () => {
+        await deleteComment(comment.id);
+        await this.renderComments();
       });
 
-      actions.append(editBtn, deleteBtn);
+      actions.append(editBtn, delBtn);
       block.appendChild(actions);
       panelBody.appendChild(block);
     });
@@ -1034,11 +790,11 @@ export default class ReviewController extends Controller {
     cancelBtn.className = "towelie-comment-cancel";
     cancelBtn.textContent = "Cancel";
 
-    saveBtn.addEventListener("click", () => {
+    saveBtn.addEventListener("click", async () => {
       const text = textarea.value.trim();
       if (!text) return;
-      this.storage.add(selection, text, this.currentStorageScope());
-      this.renderComments();
+      await addComment(selection, text);
+      await this.renderComments();
     });
 
     cancelBtn.addEventListener("click", () => {
@@ -1083,23 +839,15 @@ export default class ReviewController extends Controller {
   }
 
   private commentsForLocation(location: LineLocation): CommentRecord[] {
-    return this.storage
-      .forBranch(this.currentStorageScope())
-      .filter((comment) => {
-        const selection = comment.selection;
-        return (
-          selection.fileName === location.fileName &&
-          selection.diffSide === location.diffSide &&
-          location.lineNumber >= selection.startLine &&
-          location.lineNumber <= selection.endLine
-        );
-      });
-  }
-
-  private currentStorageScope(): string {
-    const branch = this.branchSelectTarget.value || this.currentBranchName;
-    const commit = this.commitSelectTarget.value || ALL_CHANGES;
-    return `v2|${this.currentProjectOrigin}|${branch}|${commit}`;
+    return this.comments.filter((comment) => {
+      const selection = comment.selection;
+      return (
+        selection.fileName === location.fileName &&
+        selection.diffSide === location.diffSide &&
+        location.lineNumber >= selection.startLine &&
+        location.lineNumber <= selection.endLine
+      );
+    });
   }
 
   private scrollToFile(anchorId: string) {

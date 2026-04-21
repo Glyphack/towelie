@@ -1,12 +1,25 @@
 from __future__ import annotations
 
-from enum import StrEnum
 import json
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from towelie.models import (
+    Commit,
+    CommentOutputMode,
+    DiffSide,
+    DiffStyle,
+    SyntheticRef,
+)
+
+# Re-export so existing importers don't break
+__all__ = [
+    "CommentOutputMode",
+    "DiffSide",
+    "DiffStyle",
+]
 
 DEFAULT_PROMPT_TEMPLATE = (
     "<prompt>\n"
@@ -33,21 +46,6 @@ DEFAULT_PROMPT_TEMPLATE = (
 )
 
 
-class DiffStyle(StrEnum):
-    INLINE = "inline"
-    TWO_SIDES = "two_sides"
-
-
-class CommentOutputMode(StrEnum):
-    LINE_NUMBERS = "line_numbers"
-    SELECTED_LINES = "selected_lines"
-
-
-class DiffSide(StrEnum):
-    OLD = "old"
-    NEW = "new"
-
-
 class PromptOptions(BaseModel):
     template: str = DEFAULT_PROMPT_TEMPLATE
     comment_output_mode: CommentOutputMode = CommentOutputMode.LINE_NUMBERS
@@ -67,7 +65,7 @@ class DiffOptions(BaseModel):
 class AppOptions(BaseModel):
     prompt: PromptOptions = Field(default_factory=PromptOptions)
     diff: DiffOptions = Field(default_factory=DiffOptions)
-    default_commit: str = "all_changes"
+    default_commit: str = "__all__"
 
     @classmethod
     def defaults(cls) -> AppOptions:
@@ -118,6 +116,10 @@ class AppOptions(BaseModel):
 
     def to_dict(self) -> dict:
         return self.model_dump(mode="json")
+
+    def get_default_commit(self) -> Commit:
+        ref = SyntheticRef(self.default_commit)
+        return Commit(ref=ref, label=ref.label)
 
 
 class OptionsStore:

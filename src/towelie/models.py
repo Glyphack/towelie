@@ -5,11 +5,30 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import NewType
+from typing import TYPE_CHECKING, NewType
 
-from towelie.options import CommentOutputMode, DiffSide
+from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from towelie.project import TowelieContext
 
 Branch = NewType("Branch", str)
+
+
+class DiffStyle(StrEnum):
+    INLINE = "inline"
+    TWO_SIDES = "two_sides"
+
+
+class CommentOutputMode(StrEnum):
+    LINE_NUMBERS = "line_numbers"
+    SELECTED_LINES = "selected_lines"
+
+
+class DiffSide(StrEnum):
+    OLD = "old"
+    NEW = "new"
+
 
 logger = logging.getLogger(__name__)
 
@@ -54,16 +73,36 @@ GitRef = WorkingTree | IndexRef | CommitRef
 
 
 class SyntheticRef(StrEnum):
-    ALL_CHANGES = "all_changes"
-    UNCOMMITTED = "uncommitted"
-    STAGED = "staged"
-    UNSTAGED = "unstaged"
+    ALL_CHANGES = "__all__"
+    UNCOMMITTED = "__uncommitted__"
+    STAGED = "__staged__"
+    UNSTAGED = "__unstaged__"
+
+    @property
+    def label(self) -> str:
+        return {
+            SyntheticRef.ALL_CHANGES: "All changes",
+            SyntheticRef.UNCOMMITTED: "Uncommitted",
+            SyntheticRef.STAGED: "Staged changes",
+            SyntheticRef.UNSTAGED: "Unstaged changes",
+        }[self]
 
 
 @dataclass
 class Commit:
     ref: CommitRef | SyntheticRef
     label: str
+
+    @classmethod
+    def from_ref(cls, ref: CommitRef | SyntheticRef) -> Commit:
+        label = ref.label if isinstance(ref, SyntheticRef) else ref.sha[:7]
+        return cls(ref=ref, label=label)
+
+    def to_option(self):
+        return (
+            self.label,
+            self.ref.sha if isinstance(self.ref, CommitRef) else self.ref.value,
+        )
 
 
 def parse_ref(value: str) -> CommitRef | SyntheticRef:
@@ -104,27 +143,24 @@ class Line:
     line_number: int
 
 
-@dataclass
-class Selection:
-    start: Line
-    end: Line
+class Selection(BaseModel):
+    fileName: str
+    startLine: int
+    endLine: int
+    diffSide: DiffSide
 
     def format(self) -> str:
-        side = "new" if self.start.diff_side == DiffSide.NEW else "old"
-        if self.start.line_number == self.end.line_number:
-            return f"{self.start.file_path}:{self.start.line_number} ({side})"
-        return (
-            f"{self.start.file_path}"
-            f":{self.start.line_number}-{self.end.line_number} ({side})"
-        )
+        side = "new" if self.diffSide == DiffSide.NEW else "old"
+        if self.startLine == self.endLine:
+            return f"{self.fileName}:{self.startLine} ({side})"
+        return f"{self.fileName}:{self.startLine}-{self.endLine} ({side})"
 
 
-@dataclass
-class Comment:
+class Comment(BaseModel):
     selection: Selection
     text: str
-    id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    created_at: float = field(default_factory=time.time)
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    created_at: float = Field(default_factory=time.time)
 
 
 @dataclass
@@ -133,7 +169,7 @@ class ReviewSelection:
 
     branch: Branch
     base: Branch
-    ref: CommitRef | SyntheticRef
+    commit: Commit
 
 
 @dataclass
@@ -145,37 +181,68 @@ class Review:
         self.comments.append(c)
 
     @staticmethod
-    def _format_comment_block(comment: Comment, mode: CommentOutputMode) -> str:
+    def _format_comment_block(
+        comment: Comment,
+        mode: CommentOutputMode,
+        source_lines: dict[str, str] | None = None,
+    ) -> str:
         """Format a single comment as XML, matching the frontend output."""
         sel = comment.selection
         side_label = (
             "old code (before the change)"
-            if sel.start.diff_side == DiffSide.OLD
+            if sel.diffSide == DiffSide.OLD
             else "new code (after the change)"
         )
         line_label = (
-            str(sel.start.line_number)
-            if sel.start.line_number == sel.end.line_number
-            else f"{sel.start.line_number}-{sel.end.line_number}"
+            str(sel.startLine)
+            if sel.startLine == sel.endLine
+            else f"{sel.startLine}-{sel.endLine}"
         )
         loc = (
-            f'  <location file="{sel.start.file_path}"'
+            f'  <location file="{sel.fileName}"'
             f' lines="{line_label}" side="{side_label}" />'
         )
-        if mode == CommentOutputMode.SELECTED_LINES:
-            # In TUI mode we don't have easy access to source lines at this point,
-            # so we fall back to the line_numbers format (same as frontend fallback).
-            pass
+        if (
+            mode == CommentOutputMode.SELECTED_LINES
+            and source_lines
+            and comment.id in source_lines
+        ):
+            src = source_lines[comment.id]
+            return (
+                f"<comment>\n{loc}\n"
+                f"  <source_lines>{src}</source_lines>\n"
+                f"  <text>{comment.text}</text>\n</comment>"
+            )
         return f"<comment>\n{loc}\n  <text>{comment.text}</text>\n</comment>"
 
-    def build_prompt(
-        self, template: str, output_mode: CommentOutputMode, review_text: str
+    async def build_prompt(
+        self,
+        context: TowelieContext,
+        review_text: str,
     ) -> str:
         """Build the full review prompt from this Review and a template.
 
+        Pulls config and source lines from the context.
         Can be reused by both TUI and frontend.
         """
-        blocks = [self._format_comment_block(c, output_mode) for c in self.comments]
+        options = context.options_store.load()
+        template = options.prompt.template
+        output_mode = options.prompt.comment_output_mode
+
+        source_lines: dict[str, str] = {}
+        if output_mode == CommentOutputMode.SELECTED_LINES and self.comments:
+            refs = await context.project.resolve_diff_settings(self.review_selection)
+            for c in self.comments:
+                sel = c.selection
+                git_ref = refs.old if sel.diffSide == DiffSide.OLD else refs.new
+                content = await context.project.read_file(sel.fileName, git_ref)
+                lines = "\n".join(content.splitlines()[sel.startLine - 1 : sel.endLine])
+                source_lines[c.id] = lines
+
+        blocks = [
+            self._format_comment_block(c, output_mode, source_lines)
+            for c in self.comments
+        ]
         comments_block = "\n\n".join(blocks)
         comments_block = (
             f"<overall_notes>{review_text}</overall_notes>\n\n{comments_block}"
@@ -183,7 +250,7 @@ class Review:
             else f"<overall_notes>{review_text}</overall_notes>"
         )
 
-        ref = self.review_selection.ref
+        ref = self.review_selection.commit.ref
         commit_ref = ref.sha if isinstance(ref, CommitRef) else ref.value
         review_scope = f"Review of {len(self.comments)} comment(s)"
         result = template
@@ -250,8 +317,10 @@ class SelectionState:
                 end_ln = max(anchor_line, line_number)
                 self.phase = SelectionState.Complete(
                     Selection(
-                        start=Line(file_name, diff_side, start_ln),
-                        end=Line(file_name, diff_side, end_ln),
+                        fileName=file_name,
+                        startLine=start_ln,
+                        endLine=end_ln,
+                        diffSide=diff_side,
                     )
                 )
             case _:
@@ -267,7 +336,12 @@ class SelectionState:
             case SelectionState.Commenting(selection=sel):
                 return sel
             case SelectionState.Anchored(anchor=anchor):
-                return Selection(start=anchor, end=anchor)
+                return Selection(
+                    fileName=anchor.file_path,
+                    startLine=anchor.line_number,
+                    endLine=anchor.line_number,
+                    diffSide=anchor.diff_side,
+                )
             case _:
                 logger.debug("to_selection called with no active selection")
                 return None

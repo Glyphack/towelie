@@ -9,18 +9,26 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from towelie.api_models import (
+    AddCommentRequest,
     AppOptionsPayload,
     CheckStatus,
     ChecksResponse,
+    CommentsListResponse,
     DiffResponse,
     ParsedCheck,
     ProjectInfoResponse,
+    SubmitReviewRequest,
+    SubmitReviewResponse,
+    UpdateCommentRequest,
 )
 from towelie.models import (
     Branch,
     CheckFail,
     CheckNoChecks,
     CheckPass,
+    Comment,
+    Commit,
+    Review,
     ReviewSelection,
     SyntheticRef,
     parse_ref,
@@ -28,7 +36,6 @@ from towelie.models import (
 from towelie.options import (
     AppOptions,
     DiffOptions,
-    DiffSide,
     PromptOptions,
 )
 from towelie.project import TowelieContext
@@ -152,51 +159,63 @@ class RefQuery(BaseModel):
     def to_selection(self) -> ReviewSelection:
         ref = parse_ref(self.commit) if self.commit else SyntheticRef.ALL_CHANGES
         return ReviewSelection(
-            branch=Branch(self.branch), base=Branch(self.base), ref=ref
+            branch=Branch(self.branch),
+            base=Branch(self.base),
+            commit=Commit.from_ref(ref),
         )
 
 
 @app.get("/api/diff")
-async def diff(
+async def select_diff(
     params: Annotated[RefQuery, Query()],
 ) -> DiffResponse:
     selection = params.to_selection()
-    current_branch = await APP_CONTEXT.project.get_checked_out_branch()
-    effective_branch = selection.branch or current_branch
-    is_current_branch = effective_branch == current_branch
-
-    if (
-        isinstance(selection.ref, SyntheticRef)
-        and selection.ref
-        in (SyntheticRef.UNCOMMITTED, SyntheticRef.STAGED, SyntheticRef.UNSTAGED)
-        and not is_current_branch
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Staged/unstaged/uncommitted filters are only"
-                " available for the current branch"
-            ),
-        )
+    if APP_CONTEXT.review.review_selection != selection:
+        APP_CONTEXT.review = Review(review_selection=selection)
 
     result = await APP_CONTEXT.project.compute_diff_result(selection)
     return DiffResponse(diff=result.raw_diff, files=result.files)
 
 
-@app.get("/api/source")
-async def get_source(
-    params: Annotated[RefQuery, Query()],
-    file: str,
-    start: int,
-    end: int,
-    side: DiffSide,
-) -> dict:
-    selection = params.to_selection()
-    refs = await APP_CONTEXT.project.resolve_diff_settings(selection)
-    git_ref = refs.old if side == DiffSide.OLD else refs.new
-    content = await APP_CONTEXT.project.read_file(file, git_ref)
-    lines = "\n".join(content.splitlines()[start - 1 : end])
-    return {"lines": lines}
+@app.post("/api/comments")
+async def add_comment(req: AddCommentRequest):
+    APP_CONTEXT.review.add_comment(req.comment)
+
+
+@app.put("/api/comments/{comment_id}")
+async def update_comment(comment_id: str, req: UpdateCommentRequest) -> Comment:
+    for c in APP_CONTEXT.review.comments:
+        if c.id == comment_id:
+            c.text = req.text
+            return c
+    raise HTTPException(status_code=404, detail="Comment not found")
+
+
+@app.delete("/api/comments/{comment_id}")
+async def delete_comment(comment_id: str) -> dict:
+    for i, c in enumerate(APP_CONTEXT.review.comments):
+        if c.id == comment_id:
+            APP_CONTEXT.review.comments.pop(i)
+            return {"ok": True}
+    raise HTTPException(status_code=404, detail="Comment not found")
+
+
+@app.get("/api/comments")
+async def list_comments() -> CommentsListResponse:
+    return CommentsListResponse(comments=APP_CONTEXT.review.comments)
+
+
+@app.post("/api/review/submit")
+async def submit_review(
+    req: SubmitReviewRequest,
+) -> SubmitReviewResponse:
+    review = APP_CONTEXT.review
+    if len(review.comments) == 0 and not req.overall_notes:
+        raise HTTPException(status_code=400, detail="No comments or notes to submit")
+
+    review_text = await review.build_prompt(APP_CONTEXT, req.overall_notes)
+    APP_CONTEXT.review = Review(review_selection=review.review_selection)
+    return SubmitReviewResponse(review_text=review_text)
 
 
 @app.get("/api/checks")

@@ -26,9 +26,11 @@ build-backend = "uv_build"
 dev = [
     "httpx>=0.28.1",
     "prek>=0.3.2",
+    "py-spy>=0.4.1",
     "pyright>=1.1.408",
     "pytest>=9.0.2",
     "ruff>=0.11",
+    "textual-dev>=1.8.0",
     "ty>=0.0.31",
 ]
 

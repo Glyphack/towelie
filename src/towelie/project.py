@@ -1,4 +1,6 @@
+from __future__ import annotations
 import asyncio
+
 from dataclasses import dataclass
 import logging
 import os
@@ -18,6 +20,7 @@ from towelie.models import (
     CommitRef,
     DiffSettings,
     DiffResult,
+    Review,
     ReviewSelection,
     FileDiff,
     GitRef,
@@ -141,12 +144,20 @@ class Project:
     ) -> list[Commit]:
         is_current = branch == await self.get_checked_out_branch()
         commits: list[Commit] = [
-            Commit(ref=SyntheticRef.ALL_CHANGES, label="All changes")
+            Commit(ref=SyntheticRef.ALL_CHANGES, label=SyntheticRef.ALL_CHANGES.label)
         ]
         if is_current:
-            commits.append(Commit(ref=SyntheticRef.UNCOMMITTED, label="Uncommitted"))
-            commits.append(Commit(ref=SyntheticRef.STAGED, label="Staged changes"))
-            commits.append(Commit(ref=SyntheticRef.UNSTAGED, label="Unstaged changes"))
+            commits.append(
+                Commit(
+                    ref=SyntheticRef.UNCOMMITTED, label=SyntheticRef.UNCOMMITTED.label
+                )
+            )
+            commits.append(
+                Commit(ref=SyntheticRef.STAGED, label=SyntheticRef.STAGED.label)
+            )
+            commits.append(
+                Commit(ref=SyntheticRef.UNSTAGED, label=SyntheticRef.UNSTAGED.label)
+            )
         stdout, _, _ = await _run(
             ["git", "log", f"{base}..{branch}", "--pretty=format:%H%x00%s"],
             self.git_root,
@@ -177,7 +188,7 @@ class Project:
         return stdout.decode()
 
     async def resolve_diff_settings(self, project_ref: ReviewSelection) -> DiffSettings:
-        ref = project_ref.ref
+        ref = project_ref.commit.ref
         current_branch = await self.get_checked_out_branch()
         effective_branch = project_ref.branch or current_branch
         effective_base = project_ref.base or await self.get_base_branch()
@@ -288,10 +299,22 @@ async def get_git_root() -> Path:
 class TowelieContext:
     project: Project
     options_store: OptionsStore
+    review: Review
 
     @classmethod
     async def new(cls):
-        return cls(project=Project(await get_git_root()), options_store=OptionsStore())
+        project = Project(await get_git_root())
+        options_store = OptionsStore()
+        options = options_store.load()
+        info = await project.get_info()
+        review = Review(
+            review_selection=ReviewSelection(
+                branch=info.current_branch,
+                base=info.base_branch,
+                commit=options.get_default_commit(),
+            )
+        )
+        return cls(project=project, options_store=options_store, review=review)
 
     def dev_mode(self) -> bool:
         return os.environ.get("TOWELIE_DEV") == "1"

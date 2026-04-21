@@ -31,6 +31,7 @@ from towelie.project import Project, TowelieContext
 from towelie.models import (
     Branch,
     Comment,
+    CommentOutputMode,
     Commit,
     FileDiff,
     ReviewSelection,
@@ -44,6 +45,8 @@ from towelie.options import (
     AppOptions,
     DiffSide,
     DiffStyle,
+    PromptOptions,
+    DiffOptions,
 )
 
 if TYPE_CHECKING:
@@ -446,10 +449,148 @@ class RefSelectScreen(ModalScreen[ReviewSelection | None]):
         self.dismiss(None)
 
 
+class OptionsScreen(ModalScreen[AppOptions | None]):
+    """Modal for editing application options."""
+
+    CSS = """
+    OptionsScreen { align: center middle; }
+    #options-dialog {
+        width: 80;
+        max-width: 90%;
+        height: auto;
+        max-height: 85%;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+        overflow-y: auto;
+    }
+    #options-dialog .label {
+        margin-top: 1;
+        margin-bottom: 0;
+        color: $text-muted;
+    }
+    #options-dialog .hint {
+        color: $text-disabled;
+    }
+    #options-dialog Select {
+        width: 100%;
+    }
+    #options-dialog TextArea {
+        height: 10;
+    }
+    #options-dialog .buttons {
+        height: auto;
+        margin-top: 1;
+        align: right middle;
+    }
+    #options-dialog .buttons Button {
+        margin-left: 1;
+    }
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, options: AppOptions) -> None:
+        super().__init__()
+        self._options = options
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="options-dialog"):
+            yield Static("Options", id="options-title")
+
+            yield Static("Prompt template", classes="label")
+            yield Static(
+                "Placeholders: {{comments}}, {{branch}}, {{comment_count}}, "
+                "{{commit_ref}}, {{review_scope}}",
+                classes="hint",
+            )
+            yield TextArea(self._options.prompt.template, id="opt-prompt-template")
+
+            yield Static("Comment output format", classes="label")
+            yield Select[str](
+                [
+                    ("Line numbers + comment", CommentOutputMode.LINE_NUMBERS.value),
+                    (
+                        "Selected lines + comment",
+                        CommentOutputMode.SELECTED_LINES.value,
+                    ),
+                ],
+                value=self._options.prompt.comment_output_mode.value,
+                allow_blank=False,
+                id="opt-comment-mode",
+            )
+
+            yield Static("Diff style", classes="label")
+            yield Select[str](
+                [
+                    ("Two sides", DiffStyle.TWO_SIDES.value),
+                    ("Inline", DiffStyle.INLINE.value),
+                ],
+                value=self._options.diff.style.value,
+                allow_blank=False,
+                id="opt-diff-style",
+            )
+
+            yield Static("Default commit selection", classes="label")
+            yield Select[str](
+                [(s.label, s.value) for s in SyntheticRef],
+                value=self._options.default_commit,
+                allow_blank=False,
+                id="opt-default-commit",
+            )
+
+            with Horizontal(classes="buttons"):
+                yield Button("Save", variant="primary", id="opt-save-btn")
+                yield Button("Reset defaults", id="opt-reset-btn")
+                yield Button("Cancel", id="opt-cancel-btn")
+
+    def _read_form(self) -> AppOptions:
+        template = self.query_one("#opt-prompt-template", TextArea).text
+        comment_mode = str(self.query_one("#opt-comment-mode", Select).value)
+        diff_style = str(self.query_one("#opt-diff-style", Select).value)
+        default_commit = str(self.query_one("#opt-default-commit", Select).value)
+        return AppOptions(
+            prompt=PromptOptions(
+                template=template,
+                comment_output_mode=CommentOutputMode(comment_mode),
+            ),
+            diff=DiffOptions(style=DiffStyle(diff_style)),
+            default_commit=default_commit,
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "opt-save-btn":
+            self.dismiss(self._read_form())
+        elif event.button.id == "opt-reset-btn":
+            defaults = AppOptions.defaults()
+            self.query_one(
+                "#opt-prompt-template", TextArea
+            ).text = defaults.prompt.template
+            self.query_one(
+                "#opt-comment-mode", Select
+            ).value = defaults.prompt.comment_output_mode.value
+            self.query_one("#opt-diff-style", Select).value = defaults.diff.style.value
+            self.query_one(
+                "#opt-default-commit", Select
+            ).value = defaults.default_commit
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class TowelieApp(App):
     CSS = """
     Screen {
         background: $surface;
+    }
+    #navbar {
+        dock: top;
+        height: 1;
+        background: $primary;
+        color: $text;
+        padding: 0 1;
     }
     #main-layout {
         height: 1fr;
@@ -504,13 +645,13 @@ class TowelieApp(App):
 
     BINDINGS = [
         ("escape", "clear_selection", "Clear"),
-        ("c", "add_comment", "Comment"),
         ("S", "submit_review", "Submit"),
         ("r", "select_ref", "Ref"),
         ("R", "reload_diff", "Reload"),
         ("s", "toggle_split", "Split/Unified"),
         ("a", "toggle_annotations", "Annotations"),
         ("f", "toggle_sidebar", "Files"),
+        ("O", "open_options", "Options"),
         ("d", "toggle_debug", "Debug"),
         ("q", "quit", "Quit"),
         ("question_mark", "show_help", "Help"),
@@ -541,6 +682,7 @@ class TowelieApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Static("", id="navbar")
         with Horizontal(id="main-layout"):
             with Vertical(id="sidebar", classes="-hidden"):
                 pass
@@ -603,8 +745,17 @@ class TowelieApp(App):
 
         self.selection_state.select(file_name, side, line_number)
         self._update_status()
-        if isinstance(self.selection_state, SelectionState.Complete):
-            self.action_add_comment()
+        if selection := self.selection_state.start_commenting():
+            self.push_screen(CommentScreen(selection), self._on_comment_result)
+
+    def _update_navbar(self) -> None:
+        sel = self.ctx.review.review_selection
+        parts = [
+            f"base: {sel.base}",
+            f"branch: {sel.branch}",
+            f"commit: {sel.commit.label}",
+        ]
+        self.query_one("#navbar", Static).update("  |  ".join(parts))
 
     def _update_status(self) -> None:
         selection = self.selection_state.to_selection()
@@ -664,13 +815,6 @@ class TowelieApp(App):
         self._update_status()
         self.notify("Review copied to clipboard!")
 
-    def action_add_comment(self) -> None:
-        selection = self.selection_state.start_commenting()
-        if selection is None:
-            self.notify("No lines selected for comment", severity="warning")
-            return
-        self.push_screen(CommentScreen(selection), self._on_comment_result)
-
     def _on_comment_result(self, text: str | None) -> None:
         if text is None:
             self.selection_state.clear()
@@ -712,12 +856,28 @@ class TowelieApp(App):
         self.ctx.review = Review(review_selection=result)
         self.run_worker(self._reload_diffs(result))
 
+    def action_open_options(self) -> None:
+        self.push_screen(OptionsScreen(self.options), self._on_options_result)
+
+    def _on_options_result(self, result: AppOptions | None) -> None:
+        if result is None:
+            return
+        self.ctx.options_store.save(result)
+        self._options = result
+        logger.info("Options saved")
+        self.notify("Options saved")
+        # Re-apply diff style change
+        use_split = result.diff.style == DiffStyle.TWO_SIDES
+        for dv in self.query(DiffView):
+            dv.split = use_split
+
     def action_reload_diff(self) -> None:
         self.run_worker(self._reload_diffs(self.ctx.review.review_selection))
 
     async def _reload_diffs(self, project_ref: ReviewSelection) -> None:
         """Fetch diffs for the selected ref and replace all DiffViews."""
         logger.debug("Loading diff for ref: %s", project_ref)
+        self._update_navbar()
         self.notify("Loading diff ...", timeout=1)
         diff = await self.project.compute_diff_result(project_ref)
 

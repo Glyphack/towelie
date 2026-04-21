@@ -348,6 +348,8 @@ class SelectionState:
 
     def start_commenting(self) -> Selection | None:
         """Transition to commenting state. Returns the selection or None."""
+        if not isinstance(self.phase, SelectionState.Complete):
+            return
         sel = self.to_selection()
         if sel is not None:
             self.phase = SelectionState.Commenting(selection=sel)

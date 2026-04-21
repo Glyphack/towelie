@@ -33,6 +33,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B nightly
-          git add --force .
+          git add --force pyproject.toml uv.lock src/towelie/static
           git commit -m "nightly: $(uv version --short) from $(git rev-parse --short HEAD)"
           git push --force origin nightly

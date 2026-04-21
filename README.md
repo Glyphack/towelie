@@ -2,6 +2,7 @@
 
 Local code review tool. Fast and easy.
 You can add comments and export the comments for your coding agent.
+For more details see: [Devlog 7: I made a code review tool](https://glyphack.com/dv-7/).
 
 ## Install
 

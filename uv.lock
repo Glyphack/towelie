@@ -911,7 +911,7 @@ wheels = [
 
 [[package]]
 name = "towelie"
-version = "0.1.11"
+version = "0.1.11.dev20260422064346"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },

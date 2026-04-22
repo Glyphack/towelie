@@ -1,11 +1,25 @@
 from __future__ import annotations
 
-from enum import StrEnum
 import json
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from towelie.models import (
+    Commit,
+    CommentOutputMode,
+    DiffSide,
+    DiffStyle,
+    SyntheticRef,
+)
+
+# Re-export so existing importers don't break
+__all__ = [
+    "CommentOutputMode",
+    "DiffSide",
+    "DiffStyle",
+]
 
 DEFAULT_PROMPT_TEMPLATE = (
     "<prompt>\n"
@@ -22,34 +36,14 @@ DEFAULT_PROMPT_TEMPLATE = (
     "run git diff {{commit_ref}} on branch {{branch}} to get the full diff.</note>\n"
     "</review_context>\n\n"
     "<review_comments>\n"
-    "<note>Each comment indicates whether it is on the new code (after the change) or the old code (before the change). "
-    "Comments on old code point to something that was removed or existed before — use git diff to understand the context.</note>\n\n"
+    "<note>Each comment indicates whether it is on the new code (after the change) "
+    "or the old code (before the change). "
+    "Comments on old code point to something that was removed or existed before "
+    "— use git diff to understand the context.</note>\n\n"
     "{{comments}}\n"
     "</review_comments>\n"
     "</prompt>"
 )
-
-
-class DiffStyle(StrEnum):
-    INLINE = "inline"
-    TWO_SIDES = "two_sides"
-
-
-class CommentOutputMode(StrEnum):
-    LINE_NUMBERS = "line_numbers"
-    SELECTED_LINES = "selected_lines"
-
-
-class DiffSide(StrEnum):
-    OLD = "old"
-    NEW = "new"
-
-
-class DefaultCommit(StrEnum):
-    ALL_CHANGES = "__all__"
-    UNCOMMITTED = "__uncommitted__"
-    STAGED = "__staged__"
-    UNSTAGED = "__unstaged__"
 
 
 class PromptOptions(BaseModel):
@@ -71,14 +65,16 @@ class DiffOptions(BaseModel):
 class AppOptions(BaseModel):
     prompt: PromptOptions = Field(default_factory=PromptOptions)
     diff: DiffOptions = Field(default_factory=DiffOptions)
-    default_commit: DefaultCommit = DefaultCommit.ALL_CHANGES
+    default_commit: str = "__all__"
 
     @classmethod
-    def defaults(cls) -> "AppOptions":
+    def defaults(cls) -> AppOptions:
         return cls()
 
     @classmethod
-    def from_raw(cls, data: object) -> "AppOptions":
+    def from_raw(cls, data: Any) -> AppOptions:
+        from towelie.models import SyntheticRef
+
         defaults = cls.defaults()
         if not isinstance(data, dict):
             return defaults
@@ -106,8 +102,8 @@ class AppOptions(BaseModel):
 
         default_commit = defaults.default_commit
         raw_default_commit = data.get("default_commit")
-        if raw_default_commit in {dc.value for dc in DefaultCommit}:
-            default_commit = DefaultCommit(raw_default_commit)
+        if raw_default_commit in {s.value for s in SyntheticRef}:
+            default_commit = raw_default_commit
 
         return cls(
             prompt=PromptOptions(
@@ -120,6 +116,10 @@ class AppOptions(BaseModel):
 
     def to_dict(self) -> dict:
         return self.model_dump(mode="json")
+
+    def get_default_commit(self) -> Commit:
+        ref = SyntheticRef(self.default_commit)
+        return Commit(ref=ref, label=ref.label)
 
 
 class OptionsStore:

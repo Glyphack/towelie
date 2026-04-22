@@ -1,13 +1,15 @@
+import asyncio
 import argparse
+import contextlib
 import os
+import signal
+import socket
 import subprocess
 import threading
 import time
-import webbrowser
-import socket
-import signal
-from pathlib import Path
 import urllib.request
+import webbrowser
+from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -24,10 +26,8 @@ def stop_process(proc: subprocess.Popen):
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
 
 
 def open_when_ready(port: int):
@@ -53,9 +53,11 @@ def find_available_port(
             except OSError:
                 continue
             return port
-    raise RuntimeError(
-        f"Unable to find an open port starting at {start_port} after {attempts} attempts."
+    msg = (
+        f"Unable to find an open port starting at {start_port}"
+        f" after {attempts} attempts."
     )
+    raise RuntimeError(msg)
 
 
 def dev():
@@ -71,7 +73,7 @@ def dev():
     print(f"\n  towelie → http://localhost:{port}\n")
     threading.Thread(target=open_when_ready, args=(port,), daemon=True).start()
     try:
-        uvicorn.run("towelie.app:app", host="127.0.0.1", port=port, reload=True)
+        uvicorn.run("towelie.api:app", host="127.0.0.1", port=port, reload=True)
     finally:
         stop_process(frontend_watch)
 
@@ -82,7 +84,7 @@ def run():
     port = find_available_port(4242)
     print(f"\n  towelie → http://localhost:{port}\n")
     threading.Thread(target=open_when_ready, args=(port,), daemon=True).start()
-    uvicorn.run("towelie.app:app", host="127.0.0.1", port=port)
+    uvicorn.run("towelie.api:app", host="127.0.0.1", port=port)
 
 
 def main():
@@ -95,6 +97,16 @@ def main():
         help="Run in development mode with Bun and Tailwind watchers",
     )
     parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="Run in TUI mode (terminal UI)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Open the debug panel by default in TUI mode",
+    )
+    parser.add_argument(
         "path",
         nargs="?",
         default=None,
@@ -105,7 +117,11 @@ def main():
     if args.path:
         os.environ["TOWELIE_GIT_PATH"] = str(Path(args.path).resolve())
 
-    if args.dev:
+    if args.tui:
+        from towelie.tui.app import run_tui
+
+        asyncio.run(run_tui())
+    elif args.dev:
         dev()
     else:
         run()

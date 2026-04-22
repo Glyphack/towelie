@@ -7,7 +7,7 @@ export interface ProjectRef {
 }
 
 export interface CommitInfo {
-  hash: string;
+  ref: string;
   label: string;
 }
 
@@ -46,6 +46,20 @@ export interface ProjectInfo {
   branches: Branch[];
 }
 
+export interface Selection {
+  fileName: string;
+  startLine: number;
+  endLine: number;
+  diffSide: DiffSide;
+}
+
+export interface CommentRecord {
+  id: string;
+  selection: Selection;
+  text: string;
+  created_at: number;
+}
+
 async function parseJson(res: Response): Promise<any> {
   if (!res.ok) {
     throw new Error(`Request failed with status ${res.status}`);
@@ -74,30 +88,10 @@ export async function getDiff(ref: ProjectRef): Promise<DiffResponse> {
   const data = await parseJson(await fetch(url));
   return {
     diff: {
-      diff: data.diff.diff,
-      files: data.diff.files,
+      diff: data.diff,
+      files: data.files,
     },
   };
-}
-
-export async function getSourceLines(
-  ref: ProjectRef,
-  file: string,
-  start: number,
-  end: number,
-  side: DiffSide,
-): Promise<string> {
-  const qs = new URLSearchParams({
-    file,
-    start: String(start),
-    end: String(end),
-    side,
-    branch: ref.branch,
-    base: ref.base,
-    commit: ref.commit,
-  });
-  const data = await parseJson(await fetch(`/api/source?${qs}`));
-  return data.lines as string;
 }
 
 export async function getChecks(): Promise<ChecksResponse> {
@@ -137,4 +131,53 @@ export async function updateOptions(payload: AppOptions): Promise<AppOptions> {
     diff: data.diff,
     default_commit: data.default_commit,
   };
+}
+
+export async function addComment(
+  selection: Selection,
+  text: string,
+): Promise<CommentRecord> {
+  return parseJson(
+    await fetch("/api/comments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        comment: { selection, text },
+      }),
+    }),
+  );
+}
+
+export async function updateComment(
+  id: string,
+  text: string,
+): Promise<CommentRecord> {
+  return parseJson(
+    await fetch(`/api/comments/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    }),
+  );
+}
+
+export async function deleteComment(id: string): Promise<void> {
+  await parseJson(await fetch(`/api/comments/${id}`, { method: "DELETE" }));
+}
+
+export async function getComments(): Promise<CommentRecord[]> {
+  const data = await parseJson(await fetch("/api/comments"));
+  return data.comments;
+}
+
+export async function submitReview(
+  overallNotes: string,
+): Promise<{ review_text: string }> {
+  return parseJson(
+    await fetch("/api/review/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overall_notes: overallNotes }),
+    }),
+  );
 }

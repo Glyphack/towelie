@@ -2,7 +2,9 @@
 options{% endblock %} {% block body %}
 <main class="mx-auto w-full max-w-3xl px-6 py-8" data-controller="options">
   <div class="mb-6 flex items-center gap-4">
-    <h1 class="towelie-wordmark text-2xl text-[var(--color-accent)]">Options</h1>
+    <h1 class="towelie-wordmark text-2xl text-[var(--color-accent)]">
+      Options
+    </h1>
     <a
       href="/"
       class="rounded-md px-2 py-1 text-xs text-[var(--color-text-faint)] transition-colors hover:bg-[var(--color-paper-dim)] hover:text-[var(--color-text)]"
@@ -25,7 +27,6 @@ options{% endblock %} {% block body %}
         <code>{% raw %}{{branch}}{% endraw %}</code>,
         <code>{% raw %}{{comment_count}}{% endraw %}</code>,
         <code>{% raw %}{{commit_ref}}{% endraw %}</code>,
-        <code>{% raw %}{{commit_sha}}{% endraw %}</code>,
         <code>{% raw %}{{review_scope}}{% endraw %}</code>.
       </p>
       <textarea
@@ -102,7 +103,10 @@ options{% endblock %} {% block body %}
       >
         Reset to defaults
       </button>
-      <span data-options-target="status" class="text-sm text-[var(--color-text-dim)]"></span>
+      <span
+        data-options-target="status"
+        class="text-sm text-[var(--color-text-dim)]"
+      ></span>
     </div>
   </form>
 </main>

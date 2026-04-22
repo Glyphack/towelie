@@ -3,7 +3,6 @@ import { getOptions, updateOptions, resetOptions } from "../api";
 import {
   type AppOptions,
   type CommentOutputMode,
-  type DefaultCommit,
   type DiffStyle,
 } from "../options";
 
@@ -49,7 +48,7 @@ export default class OptionsController extends Controller {
       diff: {
         style: this.diffStyleTarget.value as DiffStyle,
       },
-      default_commit: this.defaultCommitTarget.value as DefaultCommit,
+      default_commit: this.defaultCommitTarget.value,
     };
 
     try {

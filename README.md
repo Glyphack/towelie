@@ -4,6 +4,9 @@ Local code review tool. Fast and easy.
 You can add comments and export the comments for your coding agent.
 For more details see: [Devlog 7: I made a code review tool](https://glyphack.com/dv-7/).
 
+![](https://glyphack.com/dv-7/tw-1.png)
+![](https://glyphack.com/dv-7/tw-2.png)
+
 ## Install
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/).

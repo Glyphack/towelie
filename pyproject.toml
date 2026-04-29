@@ -1,6 +1,6 @@
 [project]
 name = "towelie"
-version = "0.1.11"
+version = "0.1.11.dev20260429105423"
 description = "Local code review for AI agents"
 readme = "README.md"
 authors = [

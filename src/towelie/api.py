@@ -175,7 +175,7 @@ async def select_diff(
         APP_CONTEXT.review = Review(review_selection=selection)
 
     result = await APP_CONTEXT.project.compute_diff_result(selection)
-    return DiffResponse(diff=result.raw_diff, files=result.files)
+    return DiffResponse(diff=result.raw_diff, files=result.file_diffs)
 
 
 @app.post("/api/comments")

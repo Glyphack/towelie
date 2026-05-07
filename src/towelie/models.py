@@ -123,6 +123,7 @@ class FileDiff:
     file_path: str
     old_content: str
     new_content: str
+    is_binary: bool = False
 
 
 @dataclass

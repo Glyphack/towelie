@@ -10,6 +10,7 @@ import {
   submitReview,
   updateComment,
   type CommentRecord,
+  type FileInfo,
   type ProjectRef,
   type Selection,
 } from "../api";
@@ -41,6 +42,7 @@ interface FileEntry {
   fileName: string;
   pathParts: string[];
   status: FileStatus;
+  isBinary: boolean;
   anchorId: string;
   wrapper: HTMLElement;
 }
@@ -102,7 +104,7 @@ function parseFileStatuses(diffText: string): Map<string, FileStatus> {
 function detectStatus(
   fileName: string,
   statuses: Map<string, FileStatus>,
-  diffFiles: string[],
+  diffFiles: FileInfo[],
 ): FileStatus {
   if (statuses.has(fileName)) return statuses.get(fileName) ?? "M";
 
@@ -113,9 +115,9 @@ function detectStatus(
   }
 
   const bySuffix = diffFiles.find(
-    (candidate) => candidate.endsWith(fileName) || fileName.endsWith(candidate),
+    ({ file_path }) => file_path.endsWith(fileName) || fileName.endsWith(file_path),
   );
-  if (bySuffix && statuses.has(bySuffix)) return statuses.get(bySuffix) ?? "M";
+  if (bySuffix && statuses.has(bySuffix.file_path)) return statuses.get(bySuffix.file_path) ?? "M";
   return "M";
 }
 
@@ -335,8 +337,12 @@ export default class ReviewController extends Controller {
 
   private collectFileEntries(
     statuses: Map<string, FileStatus>,
-    diffFiles: string[],
+    diffFiles: FileInfo[],
   ): FileEntry[] {
+    const binaryPaths = new Set(
+      diffFiles.filter((f) => f.is_binary).map((f) => f.file_path),
+    );
+
     return Array.from(
       this.outputTarget.querySelectorAll<HTMLElement>(".d2h-file-wrapper"),
     )
@@ -348,12 +354,13 @@ export default class ReviewController extends Controller {
         wrapper.id = anchorId;
         wrapper.dataset.fileName = fileName;
 
-        const split = fileName.split("/");
+        const isBinary = binaryPaths.has(fileName);
 
         return {
           fileName,
-          pathParts: split,
+          pathParts: fileName.split("/"),
           status: detectStatus(fileName, statuses, diffFiles),
+          isBinary: isBinary ?? false,
           anchorId,
           wrapper,
         };
@@ -438,7 +445,16 @@ export default class ReviewController extends Controller {
             dot.classList.add("hidden");
           }
 
-          row.append(icon, name, badge, dot);
+          const items: Node[] = [icon, name, badge];
+          if (entry.isBinary) {
+            const binaryBadge = document.createElement("span");
+            binaryBadge.className = "towelie-tree-binary-badge";
+            binaryBadge.textContent = "binary";
+            items.push(binaryBadge);
+          }
+          items.push(dot);
+
+          row.append(...items);
           row.addEventListener("click", () =>
             this.scrollToFile(entry.anchorId),
           );

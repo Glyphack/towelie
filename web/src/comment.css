@@ -115,6 +115,15 @@
   color: var(--color-del);
 }
 
+.towelie-tree-binary-badge {
+  border-radius: 4px;
+  padding: 0.05rem 0.28rem;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  background: #f0f0f0;
+  color: #666;
+}
+
 .towelie-tree-comment-dot {
   width: 6px;
   height: 6px;

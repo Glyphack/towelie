@@ -124,12 +124,19 @@ class Project:
                 ref_args = [old_sha, new_sha]
             case _:
                 ref_args = []
-        (diff_out, _, _), (files_out, _, _) = await asyncio.gather(
+        (diff_out, _, _), (numstat_out, _, _) = await asyncio.gather(
             _run(["git", "diff", *ref_args, "--unified=10"], self.git_root),
-            _run(["git", "diff", *ref_args, "--name-only"], self.git_root),
+            _run(["git", "diff", *ref_args, "--numstat"], self.git_root),
         )
-        files = sorted({f for f in files_out.decode().strip().split("\n") if f})
-        return DiffResult(raw_diff=diff_out.decode(), files=files)
+        all_files: list[str] = []
+        for line in numstat_out.decode().splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) == 3:
+                all_files.append(parts[2])
+        return DiffResult(
+            raw_diff=diff_out.decode(),
+            files=sorted(all_files),
+        )
 
     async def get_branches(self) -> list[Branch]:
         stdout, _, _ = await _run(
@@ -172,20 +179,24 @@ class Project:
             )
         return commits
 
-    async def read_file(self, file_path: str, ref: GitRef) -> str:
+    async def _read_bytes(self, file_path: str, ref: GitRef) -> bytes:
         if isinstance(ref, WorkingTree):
             try:
-                return (self.git_root / file_path).read_text()
+                return (self.git_root / file_path).read_bytes()
             except FileNotFoundError:
-                # File was removed in the working tree, so it won't exist on disk
-                return ""
+                return b""
         show_arg = (
             f":0:{file_path}" if isinstance(ref, IndexRef) else f"{ref.sha}:{file_path}"
         )
         stdout, _, rc = await _run(["git", "show", show_arg], self.git_root)
-        if rc != 0:
+        return stdout if rc == 0 else b""
+
+    async def read_file(self, file_path: str, ref: GitRef) -> str:
+        raw = await self._read_bytes(file_path, ref)
+        try:
+            return raw.decode()
+        except UnicodeDecodeError:
             return ""
-        return stdout.decode()
 
     async def resolve_diff_settings(self, project_ref: ReviewSelection) -> DiffSettings:
         ref = project_ref.commit.ref
@@ -224,10 +235,16 @@ class Project:
     ) -> FileDiff | None:
         if (self.git_root / file_path).is_dir():
             return None
-        old, new = await asyncio.gather(
-            self.read_file(file_path, refs.old),
-            self.read_file(file_path, refs.new),
+        old_raw, new_raw = await asyncio.gather(
+            self._read_bytes(file_path, refs.old),
+            self._read_bytes(file_path, refs.new),
         )
+        if b"\x00" in old_raw[:8192] or b"\x00" in new_raw[:8192]:
+            return FileDiff(
+                file_path=file_path, old_content="", new_content="", is_binary=True
+            )
+        old = old_raw.decode("utf-8", errors="replace")
+        new = new_raw.decode("utf-8", errors="replace")
         if old != new:
             return FileDiff(file_path=file_path, old_content=old, new_content=new)
         return None

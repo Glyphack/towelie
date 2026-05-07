@@ -2,7 +2,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator
 
-from towelie.models import Branch, Comment
+from towelie.models import Branch, Comment, FileDiff
 from towelie.options import CommentOutputMode, DiffStyle
 
 
@@ -66,7 +66,7 @@ class ProjectInfoResponse(BaseModel):
 
 class DiffResponse(BaseModel):
     diff: str
-    files: list[str]
+    files: list[FileDiff]
 
 
 class AddCommentRequest(BaseModel):

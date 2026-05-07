@@ -620,6 +620,13 @@ class TowelieApp(App):
     DiffView {
         margin-bottom: 1;
     }
+    .binary-notice {
+        padding: 1 2;
+        margin-bottom: 1;
+        background: $boost;
+        color: $text-muted;
+        border: solid $primary;
+    }
     #debug-panel {
         dock: bottom;
         height: 14;
@@ -790,8 +797,8 @@ class TowelieApp(App):
     ) -> None:
         rel_path = str(event.path.relative_to(self.project.git_root))
         target_id = _safe_id(rel_path)
-        dv = self.query_one(f"#{target_id}", DiffView)
-        dv.scroll_visible(animate=True)
+        widget = self.query_one(f"#{target_id}")
+        widget.scroll_visible(animate=True)
 
     def action_submit_review(self) -> None:
         if not self.ctx.review.comments:
@@ -895,7 +902,9 @@ class TowelieApp(App):
             self._update_status()
             return
 
-        logger.info("Loaded %d file diffs", len(diff.file_diffs))
+        binary = [fd for fd in diff.file_diffs if fd.is_binary]
+        text = [fd for fd in diff.file_diffs if not fd.is_binary]
+        logger.info("Loaded %d file diffs, %d binary", len(text), len(binary))
 
         file_tree.set_diff_paths([fd.file_path for fd in diff.file_diffs])
         file_tree.reload()
@@ -907,7 +916,7 @@ class TowelieApp(App):
             parts = Path(fd.file_path).parts
             return (*((0, p.lower()) for p in parts[:-1]), (1, parts[-1].lower()))
 
-        for fd in sorted(diff.file_diffs, key=_sort_key):
+        for fd in sorted(text, key=_sort_key):
             dv = DiffView(
                 fd.file_path,
                 fd.file_path,
@@ -917,6 +926,15 @@ class TowelieApp(App):
                 id=_safe_id(fd.file_path),
             )
             await scroll.mount(dv)
+
+        for fd in sorted(binary, key=_sort_key):
+            await scroll.mount(
+                Static(
+                    f"  {fd.file_path}  —  binary file",
+                    classes="binary-notice",
+                    id=_safe_id(fd.file_path),
+                )
+            )
 
         self._update_status()
 

@@ -16,9 +16,16 @@ export interface Branch {
   commits: CommitInfo[];
 }
 
+export interface FileInfo {
+  file_path: string;
+  old_content: string;
+  new_content: string;
+  is_binary: boolean;
+}
+
 export interface Diff {
   diff: string;
-  files: string[];
+  files: FileInfo[];
 }
 
 export interface DiffResponse {
@@ -89,7 +96,7 @@ export async function getDiff(ref: ProjectRef): Promise<DiffResponse> {
   return {
     diff: {
       diff: data.diff,
-      files: data.files,
+      files: (data.files as FileInfo[]),
     },
   };
 }

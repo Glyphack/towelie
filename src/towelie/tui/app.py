@@ -797,8 +797,8 @@ class TowelieApp(App):
     ) -> None:
         rel_path = str(event.path.relative_to(self.project.git_root))
         target_id = _safe_id(rel_path)
-        dv = self.query_one(f"#{target_id}", DiffView)
-        dv.scroll_visible(animate=True)
+        widget = self.query_one(f"#{target_id}")
+        widget.scroll_visible(animate=True)
 
     def action_submit_review(self) -> None:
         if not self.ctx.review.comments:
@@ -932,6 +932,7 @@ class TowelieApp(App):
                 Static(
                     f"  {fd.file_path}  —  binary file",
                     classes="binary-notice",
+                    id=_safe_id(fd.file_path),
                 )
             )
 

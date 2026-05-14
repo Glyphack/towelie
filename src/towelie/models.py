@@ -252,7 +252,7 @@ class Review:
         )
 
         ref = self.review_selection.commit.ref
-        commit_ref = ref.sha if isinstance(ref, CommitRef) else ref.value
+        commit_ref = ref.sha if isinstance(ref, CommitRef) else ref.label
         review_scope = f"Review of {len(self.comments)} comment(s)"
         result = template
         for key, val in {

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
-from textual.binding import Binding, BindingType
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
@@ -14,11 +14,12 @@ from textual.widgets import (
     Button,
     DirectoryTree,
     Header,
-    Markdown,
     RichLog,
     Select,
     Static,
     TextArea,
+    Footer,
+    MarkdownViewer,
 )
 
 from textual_diff_view import DiffView
@@ -50,7 +51,7 @@ from towelie.options import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable
 
     from textual import events
 
@@ -162,53 +163,6 @@ class DiffFileTree(DirectoryTree):
                 child.expand()
 
 
-_KEY_DISPLAY = {
-    "question_mark": "?",
-    "escape": "ESC",
-}
-
-
-def _unpack_binding(b: BindingType) -> tuple[str, str]:
-    """Extract (key, description) from any BindingType variant."""
-    if isinstance(b, Binding):
-        return b.key, b.description
-    match b:
-        case key, _, desc:
-            return key, desc
-        case _:
-            return b[0], ""
-
-
-def _build_help_line(bindings: Sequence[BindingType]) -> str:
-    parts = ["Click line numbers to select"]
-    for b in bindings:
-        key, desc = _unpack_binding(b)
-        parts.append(f"{_KEY_DISPLAY.get(key, key)} {desc.lower()}")
-    return "  |  ".join(parts)
-
-
-def _build_help_md(bindings: Sequence[BindingType]) -> str:
-    lines = ["# Keybindings", "", "| Key | Action |", "|-----|--------|"]
-    for b in bindings:
-        key, desc = _unpack_binding(b)
-        display = _KEY_DISPLAY.get(key, key)
-        lines.append(f"| **{display}** | {desc} |")
-
-    _HELP_MD_FOOTER = """\
-
-    ## Selection
-
-    1. Click a **line number** in the gutter to set an anchor.
-    2. Click a **second line number** (same file & side) to complete the range.
-    3. Press **c** to comment on the selected range.
-
-    ## Comments
-
-    Comments support **Markdown** formatting.
-    """
-    return "\n".join(lines) + _HELP_MD_FOOTER
-
-
 class HelpScreen(ModalScreen[None]):
     CSS = """
     HelpScreen { align: center middle; }
@@ -219,15 +173,18 @@ class HelpScreen(ModalScreen[None]):
     #help-dialog Button { margin-top: 1; width: 100%; }
     """
 
-    BINDINGS = [("escape", "close", "Close"), ("question_mark", "close", "Close")]
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("question_mark", "close", "Close", key_display="?"),
+    ]
 
-    def __init__(self, app_bindings: Sequence[BindingType]) -> None:
+    def __init__(self, app_bindings: list[Binding]) -> None:
         super().__init__()
-        self._help_md = _build_help_md(app_bindings)
+        self._help_md = self._build_help_md(app_bindings)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="help-dialog"):
-            yield Markdown(self._help_md)
+            yield MarkdownViewer(self._help_md, show_table_of_contents=False)
             yield Button("Close", id="help-close-btn")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -236,6 +193,31 @@ class HelpScreen(ModalScreen[None]):
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+    def _build_help_md(self, bindings: list[Binding]) -> str:
+        prelude = "Towelie is a code review tool with comment support."
+        lines = ["# Keybindings", "", "| Key | Action |", "|-----|--------|"]
+        for b in bindings:
+            if isinstance(b, Binding):
+                display = b.key_display or b.key
+                desc = b.description
+            else:
+                display = b[0]
+                desc = b[2] if len(b) > 2 else ""
+            lines.append(f"| **{display}** | {desc} |")
+
+        _HELP_MD_FOOTER = """
+## Selection
+
+1. Click a **line number** in the gutter to set an anchor.
+2. Click a **second line number** (same file & side) to complete the range.
+3. Press **c** to comment on the selected range.
+
+## Comments
+
+Comments support **Markdown** formatting.
+        """
+        return prelude + "\n" + "\n".join(lines) + _HELP_MD_FOOTER
 
 
 class TextInputModal(ModalScreen[str | None]):
@@ -270,7 +252,7 @@ class TextInputModal(ModalScreen[str | None]):
     }
     """
 
-    BINDINGS = [("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
     def __init__(
         self,
@@ -364,7 +346,7 @@ class RefSelectScreen(ModalScreen[ReviewSelection | None]):
     }
     """
 
-    BINDINGS = [("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
     def __init__(self, ctx: TowelieContext, review: Review) -> None:
         super().__init__()
@@ -488,7 +470,7 @@ class OptionsScreen(ModalScreen[AppOptions | None]):
     }
     """
 
-    BINDINGS = [("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
     def __init__(self, options: AppOptions) -> None:
         super().__init__()
@@ -610,13 +592,6 @@ class TowelieApp(App):
     #diff-scroll {
         width: 1fr;
     }
-    #status-bar {
-        dock: bottom;
-        height: 1;
-        background: $accent;
-        color: $text;
-        padding: 0 1;
-    }
     DiffView {
         margin-bottom: 1;
     }
@@ -651,17 +626,17 @@ class TowelieApp(App):
     SUB_TITLE = "code review"
 
     BINDINGS = [
-        ("escape", "clear_selection", "Clear"),
-        ("S", "submit_review", "Submit"),
-        ("r", "select_ref", "Ref"),
-        ("R", "reload_diff", "Reload"),
-        ("s", "toggle_split", "Split/Unified"),
-        ("a", "toggle_annotations", "Annotations"),
-        ("f", "toggle_sidebar", "Files"),
-        ("O", "open_options", "Options"),
-        ("d", "toggle_debug", "Debug"),
-        ("q", "quit", "Quit"),
-        ("question_mark", "show_help", "Help"),
+        Binding("question_mark", "show_help", "Help", key_display="?"),
+        Binding("escape", "clear_selection", "Clear"),
+        Binding("S", "submit_review", "Submit"),
+        Binding("r", "select_ref", "Ref"),
+        Binding("R", "reload_diff", "Reload"),
+        Binding("s", "toggle_split", "Split/Unified"),
+        Binding("a", "toggle_annotations", "Annotations"),
+        Binding("f", "toggle_sidebar", "Files"),
+        Binding("O", "open_options", "Options"),
+        Binding("d", "toggle_debug", "Debug"),
+        Binding("q", "quit", "Quit"),
     ]
 
     def __init__(self) -> None:
@@ -670,7 +645,6 @@ class TowelieApp(App):
         self._options: AppOptions | None = None
         self._project: Project | None = None
         self.selection_state = SelectionState()
-        self._help_line = _build_help_line(self.BINDINGS)
 
     @property
     def ctx(self) -> TowelieContext:
@@ -697,7 +671,7 @@ class TowelieApp(App):
         with Vertical(id="debug-panel"):
             yield Static("Debug Log", id="debug-title")
             yield RichLog(id="debug-log", wrap=True, markup=True)
-        yield Static(self._help_line, id="status-bar")
+        yield Footer()
 
     async def on_mount(self) -> None:
         log_widget = self.query_one("#debug-log", RichLog)
@@ -751,7 +725,6 @@ class TowelieApp(App):
         )
 
         self.selection_state.select(file_name, side, line_number)
-        self._update_status()
         if selection := self.selection_state.start_commenting():
             self.push_screen(CommentScreen(selection), self._on_comment_result)
 
@@ -764,24 +737,8 @@ class TowelieApp(App):
         ]
         self.query_one("#navbar", Static).update("  |  ".join(parts))
 
-    def _update_status(self) -> None:
-        selection = self.selection_state.to_selection()
-        status = self.query_one("#status-bar", Static)
-        if selection is None:
-            status.update(self._help_line)
-            return
-
-        loc = selection.format()
-        if self.selection_state.is_selecting:
-            status.update(
-                f"Selecting: {loc}  \u2014 click another line to complete range"
-            )
-        else:
-            status.update(f"Selected: {loc}  \u2014 press c to comment")
-
     def action_clear_selection(self) -> None:
         self.selection_state.clear()
-        self._update_status()
 
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen(self.BINDINGS))
@@ -819,13 +776,11 @@ class TowelieApp(App):
         self.copy_to_clipboard(result)
         self.ctx.review = Review(review_selection=self.ctx.review.review_selection)
         self.selection_state.clear()
-        self._update_status()
         self.notify("Review copied to clipboard!")
 
     def _on_comment_result(self, text: str | None) -> None:
         if text is None:
             self.selection_state.clear()
-            self._update_status()
             return
         if not text:
             self.notify("Comment cannot be empty", severity="warning")
@@ -836,7 +791,6 @@ class TowelieApp(App):
             return
         self.ctx.review.add_comment(Comment(selection=selection, text=text))
         self.selection_state.clear()
-        self._update_status()
 
     def action_toggle_split(self) -> None:
         for dv in self.query(DiffView):
@@ -899,7 +853,6 @@ class TowelieApp(App):
             file_tree.set_diff_paths([])
             file_tree.reload()
             await scroll.remove_children()
-            self._update_status()
             return
 
         binary = [fd for fd in diff.file_diffs if fd.is_binary]
@@ -935,8 +888,6 @@ class TowelieApp(App):
                     id=_safe_id(fd.file_path),
                 )
             )
-
-        self._update_status()
 
 
 async def run_tui() -> None:

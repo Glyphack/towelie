@@ -127,13 +127,11 @@ def _determine_diff_side(widget: LineAnnotations) -> DiffSide:
 
 
 def _safe_id(path: str) -> str:
-    """Sanitize file paths for use as Textual widget IDs.
+    import re
 
-    Textual requires widget IDs to match CSS identifier rules (no slashes,
-    dots, or spaces).  This converts an arbitrary file path into a safe
-    hyphenated string prefixed with ``dv-``.
-    """
-    return "dv-" + path.replace("/", "--").replace(".", "-").replace(" ", "-")
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]", "-", path)
+    sanitized = re.sub(r"-{2,}", "--", sanitized)
+    return "dv-" + sanitized
 
 
 class DiffFileTree(DirectoryTree):
